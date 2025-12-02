@@ -17,9 +17,6 @@
 
 本仓库包含以下主要文件：
 
-- `changeip.sh`
-  - 你已有的换 IP 脚本。默认假定它位于 VPS 根目录 `/changeip.sh`。
-  - 内容示例（仅供参考）：先 `ifdown` 网卡、等待 900 秒，再 `ifup` 获取新 IP。
 - `changeip_http_server.js`
   - 使用 Node.js 编写的极简 HTTP 服务。
   - 监听一个端口，接受 `POST /changeip` 请求，校验密钥后后台执行 `changeip.sh` 和系统重启。
@@ -28,6 +25,12 @@
   - 安装脚本：创建 systemd 服务、配置环境变量、启用并启动该 HTTP 服务。
 - `uninstall.sh`
   - 卸载脚本：停用并删除 systemd 服务和配置，恢复系统到安装前状态（不删除你的 `changeip.sh` 和仓库代码）。
+
+在服务器上，你需要自备一个可用的换 IP 脚本：
+
+- `/root/changeip.sh`
+  - 实际执行换 IP 的脚本，本项目默认假定它位于 `/root/changeip.sh`。
+  - 该脚本 **不包含在仓库中**，由你自行维护。
 
 安装完成后，对服务器产生的**持久影响**仅包括：
 
@@ -45,7 +48,7 @@
 目标环境：**Debian / Ubuntu 系** VPS，具有以下条件：
 
 - 已存在且可手动执行的换 IP 脚本 `changeip.sh`：
-  - 默认路径：`/changeip.sh`（可在安装时自定义）。
+  - 默认路径：`/root/changeip.sh`（可在安装时自定义）。
   - 使用 `root` 权限执行时应能成功完成换 IP。
 - 安装了 Node.js（建议 16+，能运行普通 Node 脚本）。
 
@@ -97,7 +100,7 @@ apt install -y nodejs
 所有行为均由以下环境变量控制（通过 `/etc/default/changeip-http` 配置）：
 
 - `AUTH_TOKEN`：共享密钥，必须设置。用于认证来自 Telegram 机器人的请求。
-- `CHANGEIP_SCRIPT`：`changeip.sh` 的绝对路径（默认 `/changeip.sh`）。
+- `CHANGEIP_SCRIPT`：`changeip.sh` 的绝对路径（默认 `/root/changeip.sh`）。
 - `PORT`：HTTP 监听端口（默认 `8787`）。
 - `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（默认 `16`，建议大于脚本内部的等待时间）。
 
@@ -111,20 +114,20 @@ apt install -y nodejs
 
 ```bash
 cd /root
-git clone https://github.com/<your-name>/ipchanger-http.git
-cd ipchanger-http   # 或者你的仓库目录名
+git clone https://github.com/<your-name>/ip-changer.git
+cd ip-changer   # 仓库目录
 ```
 
-> 替换 `https://github.com/<your-name>/ipchanger-http.git` 为你自己的仓库地址。
+> 替换 `https://github.com/<your-name>/ip-changer.git` 为你自己的仓库地址。
 
 ### 4.2 确认 `changeip.sh` 可用
 
 确保你的 VPS 上存在脚本，并以 `root` 手动执行无误：
 
 ```bash
-ls /changeip.sh
-chmod +x /changeip.sh
-/bin/bash /changeip.sh
+ls /root/changeip.sh
+chmod +x /root/changeip.sh
+/bin/bash /root/changeip.sh
 ```
 
 如路径不同，请记住其绝对路径，稍后安装脚本会询问。
@@ -157,7 +160,7 @@ chmod +x install.sh uninstall.sh
 2. 检查 `node` 命令是否存在。
 3. 询问配置项（有默认值）：
    - HTTP 端口（默认 `8787`）
-   - `changeip.sh` 路径（默认 `/changeip.sh`）
+   - `changeip.sh` 路径（默认 `/root/changeip.sh`）
    - 重启延迟分钟数（默认 `16`）
    - 共享密钥 `AUTH_TOKEN`：
      - 如果留空，则自动生成一个高随机度的字符串并保存。
@@ -210,7 +213,7 @@ curl -X POST "http://127.0.0.1:8787/changeip" \
 当你不再需要该服务时，可以通过卸载脚本**完全移除所有系统级改动**：
 
 ```bash
-cd /root/ipchanger-http   # 或你的仓库目录
+cd /root/ip-changer   # 或你的仓库目录
 ./uninstall.sh
 ```
 
@@ -227,7 +230,7 @@ cd /root/ipchanger-http   # 或你的仓库目录
 若你希望连源码一并删除，只需手动：
 
 ```bash
-rm -rf /root/ipchanger-http
+rm -rf /root/ip-changer
 ```
 
 ---
@@ -266,7 +269,7 @@ rm -rf /root/ipchanger-http
 当你在 GitHub 上更新了此项目后，在 VPS 上执行：
 
 ```bash
-cd /root/ipchanger-http   # 或你的仓库目录
+cd /root/ip-changer   # 或你的仓库目录
 git pull
 systemctl restart changeip-http
 ```
@@ -298,11 +301,10 @@ systemctl restart changeip-http
 - **Q: 可以不用 systemd，直接前台运行吗？**  
   A: 可以。在仓库目录直接运行：
   ```bash
-  AUTH_TOKEN=... CHANGEIP_SCRIPT=/changeip.sh PORT=8787 REBOOT_DELAY_MINUTES=16 \
+  AUTH_TOKEN=... CHANGEIP_SCRIPT=/root/changeip.sh PORT=8787 REBOOT_DELAY_MINUTES=16 \
     node changeip_http_server.js
   ```
   即可启动服务，但不具备开机自启与守护功能。
 
 - **Q: CarpoolNotifier 必须部署在 VPS 上吗？**  
   A: 不需要。CarpoolNotifier 可以继续部署在 Cloudflare Worker 上，只要它能访问你的 VPS HTTP 端口即可（你需要在防火墙或安全组中允许来自相应 IP 的访问）。
-

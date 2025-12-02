@@ -20,8 +20,8 @@ echo "=== IPChanger HTTP 服务安装 ==="
 read -rp "HTTP 监听端口 [默认 8787]: " PORT
 PORT="${PORT:-8787}"
 
-read -rp "changeip.sh 脚本绝对路径 [默认 /changeip.sh]: " CHANGEIP_SCRIPT
-CHANGEIP_SCRIPT="${CHANGEIP_SCRIPT:-/changeip.sh}"
+read -rp "changeip.sh 脚本绝对路径 [默认 /root/changeip.sh]: " CHANGEIP_SCRIPT
+CHANGEIP_SCRIPT="${CHANGEIP_SCRIPT:-/root/changeip.sh}"
 
 read -rp "重启延迟（分钟）[默认 16]: " REBOOT_DELAY_MINUTES
 REBOOT_DELAY_MINUTES="${REBOOT_DELAY_MINUTES:-16}"
@@ -81,4 +81,3 @@ echo
 echo "请在 Telegram 机器人所在环境中配置："
 echo "  CHANGEIP_ENDPOINT=http://<VPS_IP>:$PORT/changeip"
 echo "  CHANGEIP_TOKEN=$AUTH_TOKEN"
-

@@ -10,7 +10,7 @@ const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
-const CHANGEIP_SCRIPT = process.env.CHANGEIP_SCRIPT || '/changeip.sh';
+const CHANGEIP_SCRIPT = process.env.CHANGEIP_SCRIPT || '/root/changeip.sh';
 const REBOOT_DELAY_MINUTES = parseInt(process.env.REBOOT_DELAY_MINUTES || '16', 10);
 
 if (!AUTH_TOKEN) {
