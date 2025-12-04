@@ -6,6 +6,7 @@
 //   http://<vps-ip>:8787/changeip  with JSON body: { "token": "your-secret" }
 
 const http = require('http');
+const fs = require('fs');
 const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
@@ -39,12 +40,27 @@ function scheduleReboot() {
 }
 
 function runChangeIp(res) {
+  if (!fs.existsSync(CHANGEIP_SCRIPT)) {
+    return jsonResponse(res, 500, { ok: false, error: 'changeip script not found' });
+  }
+  try {
+    fs.accessSync(CHANGEIP_SCRIPT, fs.constants.X_OK);
+  } catch (err) {
+    return jsonResponse(res, 500, { ok: false, error: 'changeip script not executable' });
+  }
+
   console.log(`[changeip-http] starting changeip script: ${CHANGEIP_SCRIPT} ...`);
 
-  const proc = spawn('/bin/bash', [CHANGEIP_SCRIPT], {
-    stdio: 'ignore',
-    detached: true
-  });
+  let proc;
+  try {
+    proc = spawn('/bin/bash', [CHANGEIP_SCRIPT], {
+      stdio: 'ignore',
+      detached: true
+    });
+  } catch (err) {
+    console.error('[changeip-http] failed to spawn changeip script:', err);
+    return jsonResponse(res, 500, { ok: false, error: 'failed to spawn changeip script' });
+  }
 
   proc.on('error', (err) => {
     console.error('[changeip-http] failed to start changeip script:', err);
