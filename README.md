@@ -1,15 +1,15 @@
-# IPChanger HTTP Trigger for Telegram Bot
+# ip-changer — HTTP Trigger + IPv4 变化监测
 
-一个极简的 HTTP 服务，用于在 Debian VPS 上通过 Telegram 机器人一键执行 `changeip.sh` 并安排自动重启，从而更换服务器公网 IP。
+一个极简的常驻服务，用于在 Debian VPS 上：
+
+- （可选）通过 HTTP 触发 `changeip.sh` + 自动重启，实现一键更换公网 IP
+- 监测公网 **IPv4** 是否发生变化，并上报到 CarpoolNotifier（Cloudflare Worker），由机器人自动播报到频道 + 管理员
 
 本项目只负责：
 
-- 在 VPS 上监听一个本地 HTTP 接口（默认 `0.0.0.0:8787`）。
-- 接收到带有共享密钥的请求后：
-  - 后台执行 `changeip.sh`（你已有的换 IP 脚本）。
-  - 调用 `shutdown -r +N` 安排若干分钟后自动重启。
-
-你现有的 Telegram 机器人（例如 CarpoolNotifier）只需要在收到 `/changeip` 指令后，向该 HTTP 接口发一个带密钥的 POST 请求即可。
+- 在 VPS 上监听一个 HTTP 接口（默认 `0.0.0.0:8787`）。
+- （可选）接收到带密钥的请求后后台执行 `changeip.sh` 并安排重启。
+- 定期检测公网 IPv4 变化并上报到 CarpoolNotifier。
 
 ---
 
@@ -18,9 +18,8 @@
 本仓库包含以下主要文件：
 
 - `changeip_http_server.js`
-  - 使用 Node.js 编写的极简 HTTP 服务。
-  - 监听一个端口，接受 `POST /changeip` 请求，校验密钥后后台执行 `changeip.sh` 和系统重启。
-  - 不依赖任何第三方 NPM 包，仅使用 Node 标准库（`http`、`child_process`）。
+  - 使用 Node.js 编写的极简常驻服务（HTTP + IPv4 监测上报）。
+  - 不依赖任何第三方 NPM 包，仅使用 Node 标准库。
 - `install.sh`
   - 安装脚本：创建 systemd 服务、配置环境变量、启用并启动该 HTTP 服务。
 - `uninstall.sh`
@@ -36,8 +35,9 @@
 
 - 创建 systemd 单元：`/etc/systemd/system/changeip-http.service`
 - 创建环境变量配置文件：`/etc/default/changeip-http`
+- （启用监测上报时）创建状态目录：`/var/lib/changeip-http`（用于保存上次已上报 IPv4，卸载会删除）
 
-卸载脚本会删除上述两个文件并重新加载 systemd，确保**不留下任何系统级残留**。
+卸载脚本会删除上述文件/目录并重新加载 systemd，确保**不留下任何系统级残留**。
 
 > 仓库本身（即你 `git clone` 的目录）视为源码目录，由你自行决定是否删除。
 
@@ -47,7 +47,7 @@
 
 目标环境：**Debian / Ubuntu 系** VPS，具有以下条件：
 
-- 已存在且可手动执行的换 IP 脚本 `changeip.sh`：
+- （如果启用 `/changeip`）已存在且可手动执行的换 IP 脚本 `changeip.sh`：
   - 默认路径：`/root/changeip.sh`（可在安装时自定义）。
   - 使用 `root` 权限执行时应能成功完成换 IP。
 - 安装了 Node.js（建议 16+，能运行普通 Node 脚本）。
@@ -75,6 +75,7 @@ apt install -y nodejs
       { "ok": true, "service": "changeip-http" }
       ```
   - `POST /changeip`
+    - 仅当 `CHANGEIP_ENABLED=1` 时可用；否则返回 `403`。
     - 请求头：`Content-Type: application/json`
     - 请求体示例：
       ```json
@@ -93,7 +94,10 @@ apt install -y nodejs
         ```json
         {
           "ok": true,
-          "message": "changeip started, reboot scheduled in <N> minutes"
+          "message": "changeip started, reboot scheduled in <N> minutes",
+          "server_label": "CMHK",
+          "channel": "@your_channel",
+          "old_ipv4": "1.2.3.4"
         }
         ```
 
@@ -103,6 +107,21 @@ apt install -y nodejs
 - `CHANGEIP_SCRIPT`：`changeip.sh` 的绝对路径（默认 `/root/changeip.sh`）。
 - `PORT`：HTTP 监听端口（默认 `8787`）。
 - `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（默认 `16`，建议大于脚本内部的等待时间）。
+- `CHANGEIP_ENABLED`：是否启用 `/changeip` 接口（`1` 启用，`0` 关闭）。
+
+### 3.1 IPv4 监测与上报说明
+
+当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**，若与“上次已成功上报的 IPv4”不同，则向 CarpoolNotifier 的内部接口上报一次（仅在变化时播报）。
+
+环境变量：
+
+- `IP_MONITOR_ENABLED`：`1/0`，启用/关闭监测上报
+- `IP_MONITOR_INTERVAL_SECONDS`：检测间隔秒数（默认 `60`）
+- `IP_STATE_FILE`：状态文件路径（默认 `/var/lib/changeip-http/ip_state.json`）
+- `IP_REPORT_ENDPOINT`：CarpoolNotifier 上报地址（例如 `https://<worker>/internal/ip-changed`）
+- `IP_REPORT_TOKEN`：上报鉴权密钥（HTTP Header：`Authorization: Bearer <token>`）
+- `SERVER_LABEL`：服务器标识（用于多服务器区分）
+- `REPORT_CHANNEL`：播报频道（`@channel_username`）
 
 ---
 
@@ -125,12 +144,13 @@ cd ip-changer   # 仓库目录
 确保你的 VPS 上存在脚本，并以 `root` 手动执行无误：
 
 ```bash
-ls /root/changeip.sh
-chmod +x /root/changeip.sh
+ls -l /root/changeip.sh
 /bin/bash /root/changeip.sh
 ```
 
 如路径不同，请记住其绝对路径，稍后安装脚本会询问。
+
+> 说明：本项目通过 `/bin/bash <CHANGEIP_SCRIPT>` 执行脚本，因此脚本 **可执行位不是必须**；但如果你希望直接 `./changeip.sh` 运行，可以自行 `chmod +x`。
 
 ### 4.3 确认 Node.js 可用
 
@@ -160,10 +180,18 @@ chmod +x install.sh uninstall.sh
 2. 检查 `node` 命令是否存在。
 3. 询问配置项（有默认值）：
    - HTTP 端口（默认 `8787`）
-   - `changeip.sh` 路径（默认 `/root/changeip.sh`）
-   - 重启延迟分钟数（默认 `16`）
-   - 共享密钥 `AUTH_TOKEN`：
-     - 如果留空，则自动生成一个高随机度的字符串并保存。
+   - 是否启用 `/changeip`（不支持脚本换 IP 的 VPS 可关闭）
+   - 若启用 `/changeip`：
+     - `changeip.sh` 路径（默认 `/root/changeip.sh`）
+     - 重启延迟分钟数（默认 `16`）
+   - 共享密钥 `AUTH_TOKEN`（留空则自动生成）
+   - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
+   - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空）
+   - 是否启用 IPv4 监测上报（建议开启以实现自动播报）
+   - 若启用监测上报：
+     - 上报地址 `IP_REPORT_ENDPOINT`（CarpoolNotifier 内部接口）
+     - 上报密钥 `IP_REPORT_TOKEN`（留空则自动生成）
+     - 检测间隔秒数（默认 `60`）
 4. 创建环境配置文件：`/etc/default/changeip-http`
 5. 创建 systemd 服务：`/etc/systemd/system/changeip-http.service`
 6. 运行：
@@ -196,7 +224,7 @@ curl http://127.0.0.1:8787/
 {"ok":true,"service":"changeip-http"}
 ```
 
-然后测试 `/changeip` 接口（将 `<YOUR_TOKEN>` 替换为安装时显示/设置的 `AUTH_TOKEN`）：
+如果你启用了 `/changeip`，再测试 `/changeip` 接口（将 `<YOUR_TOKEN>` 替换为安装时显示/设置的 `AUTH_TOKEN`）：
 
 ```bash
 curl -X POST "http://127.0.0.1:8787/changeip" \
@@ -223,7 +251,8 @@ cd /root/ip-changer   # 或你的仓库目录
 2. `systemctl disable changeip-http`（取消开机自启）
 3. 删除 systemd 单元文件：`/etc/systemd/system/changeip-http.service`
 4. 删除环境配置文件：`/etc/default/changeip-http`
-5. `systemctl daemon-reload`
+5. 删除状态目录：`/var/lib/changeip-http`
+6. `systemctl daemon-reload`
 
 卸载后系统中不再有任何与本项目相关的 systemd 配置或环境文件，**不会影响其他模块的正常运行**。
 
@@ -237,7 +266,7 @@ rm -rf /root/ip-changer
 
 ## 6. 与 Telegram 机器人（CarpoolNotifier）对接
 
-你已有的 CarpoolNotifier 机器人可以通过新增 `/changeip` 管理员命令来调用此 HTTP 服务（该命令的示例实现已经在原项目中添加，不再赘述），整体流程如下：
+CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` 接口，整体流程如下：
 
 1. 在 VPS 上按本 README 安装并启动本服务。
 2. 记住以下两项配置：
@@ -260,6 +289,18 @@ rm -rf /root/ip-changer
 > - 尽量只在内网或受控网络中开放该端口（如通过防火墙限制来源 IP）。
 > - `AUTH_TOKEN` 要足够随机且保密，只在 CarpoolNotifier 环境变量和安装日志（你自己留存）中使用。
 
+### 6.1 IPv4 自动播报对接
+
+`ip-changer` 会向 CarpoolNotifier 的内部接口上报 IPv4 变化，因此你需要在 Cloudflare Worker 中配置密钥：
+
+- `IP_REPORT_TOKEN`（secret）：与 VPS 上 `IP_REPORT_TOKEN` 完全一致
+
+并确保 Worker 中已实现内部路由：
+
+- `POST /internal/ip-changed`（鉴权：`Authorization: Bearer <IP_REPORT_TOKEN>`）
+
+随后，当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会自动播报到 `REPORT_CHANNEL`（以及管理员）。
+
 ---
 
 ## 7. 更新与维护
@@ -280,9 +321,16 @@ systemctl restart changeip-http
 
 - 编辑 `/etc/default/changeip-http`，修改任意环境变量：
   - `AUTH_TOKEN`
-  - `CHANGEIP_SCRIPT`
   - `PORT`
+  - `CHANGEIP_ENABLED`
+  - `CHANGEIP_SCRIPT`
   - `REBOOT_DELAY_MINUTES`
+  - `IP_MONITOR_ENABLED`
+  - `IP_MONITOR_INTERVAL_SECONDS`
+  - `IP_REPORT_ENDPOINT`
+  - `IP_REPORT_TOKEN`
+  - `SERVER_LABEL`
+  - `REPORT_CHANNEL`
 - 然后重启服务：
 
 ```bash
@@ -301,8 +349,9 @@ systemctl restart changeip-http
 - **Q: 可以不用 systemd，直接前台运行吗？**  
   A: 可以。在仓库目录直接运行：
   ```bash
-  AUTH_TOKEN=... CHANGEIP_SCRIPT=/root/changeip.sh PORT=8787 REBOOT_DELAY_MINUTES=16 \
-    node changeip_http_server.js
+  AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=16 \
+  IP_MONITOR_ENABLED=1 IP_REPORT_ENDPOINT=... IP_REPORT_TOKEN=... SERVER_LABEL=... REPORT_CHANNEL=@... \
+  node changeip_http_server.js
   ```
   即可启动服务，但不具备开机自启与守护功能。
 

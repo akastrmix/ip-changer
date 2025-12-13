@@ -9,6 +9,7 @@ fi
 
 ENV_FILE="/etc/default/changeip-http"
 SERVICE_FILE="/etc/systemd/system/changeip-http.service"
+STATE_DIR="/var/lib/changeip-http"
 
 echo "=== 卸载 IPChanger HTTP 服务 ==="
 
@@ -26,9 +27,11 @@ rm -f "$SERVICE_FILE"
 echo "删除环境配置文件（如存在）: $ENV_FILE"
 rm -f "$ENV_FILE"
 
+echo "删除状态目录（如存在）: $STATE_DIR"
+rm -rf "$STATE_DIR"
+
 echo "重新加载 systemd ..."
 systemctl daemon-reload
 
 echo "=== 卸载完成 ==="
 echo "系统级改动已移除。如需彻底清理源码，请手动删除本仓库目录。"
-
