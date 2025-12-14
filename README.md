@@ -74,6 +74,27 @@ apt install -y nodejs
       ```json
       { "ok": true, "service": "changeip-http" }
       ```
+  - `POST /info`
+    - 获取本机 `SERVER_LABEL` / `REPORT_CHANNEL` / 上次已记录的 IPv4（不触发换 IP）。
+    - 请求头：`Content-Type: application/json`
+    - 请求体示例：
+      ```json
+      { "token": "YOUR_SHARED_SECRET" }
+      ```
+    - 校验规则：
+      - `token` 字段必须等于环境变量 `AUTH_TOKEN`。
+      - 不满足则返回 `403`。
+    - 返回示例：
+      ```json
+      {
+        "ok": true,
+        "server_label": "CMHK",
+        "channel": "@your_channel",
+        "changeip_enabled": true,
+        "ip_monitor_enabled": true,
+        "notified_ipv4": "1.2.3.4"
+      }
+      ```
   - `POST /changeip`
     - 仅当 `CHANGEIP_ENABLED=1` 时可用；否则返回 `403`。
     - 请求头：`Content-Type: application/json`
@@ -224,6 +245,12 @@ curl http://127.0.0.1:8787/
 {"ok":true,"service":"changeip-http"}
 ```
 
+如需测试 `/info`（将 `<YOUR_TOKEN>` 替换为安装时显示/设置的 `AUTH_TOKEN`）：
+
+```bash
+curl -X POST "http://127.0.0.1:8787/info" -H "Content-Type: application/json" -d '{"token":"<YOUR_TOKEN>"}'
+```
+
 如果你启用了 `/changeip`，再测试 `/changeip` 接口（将 `<YOUR_TOKEN>` 替换为安装时显示/设置的 `AUTH_TOKEN`）：
 
 ```bash
@@ -284,6 +311,8 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
    - 向 `CHANGEIP_ENDPOINT` 发送带 `CHANGEIP_TOKEN` 的 POST 请求。
    - 通过后提示“已收到更换 IP 请求……约 15 分钟后自动重启”。
    - VPS 后台执行 `changeip.sh` 并在设定时间后重启。
+
+> 说明：机器人也可以调用本服务的 `/info` 获取 `server_label` / `channel` / `notified_ipv4`，用于在频道内提前发布“即将换 IP”预告，并在同一条消息中持续更新进度。
 
 > 安全建议：
 > - 尽量只在内网或受控网络中开放该端口（如通过防火墙限制来源 IP）。

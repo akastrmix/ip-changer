@@ -108,6 +108,40 @@ function handleRequest(req, res) {
     return jsonResponse(res, 200, { ok: true, service: 'changeip-http' });
   }
 
+  if (method === 'POST' && url === '/info') {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1024) {
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      let parsed = null;
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch (_err) {
+        return jsonResponse(res, 400, { ok: false, error: 'invalid json' });
+      }
+
+      const token = parsed && typeof parsed.token === 'string' ? parsed.token : '';
+      if (!token || token !== AUTH_TOKEN) {
+        return jsonResponse(res, 403, { ok: false, error: 'forbidden' });
+      }
+
+      const state = loadState();
+      return jsonResponse(res, 200, {
+        ok: true,
+        server_label: SERVER_LABEL,
+        channel: REPORT_CHANNEL,
+        changeip_enabled: CHANGEIP_ENABLED,
+        ip_monitor_enabled: IP_MONITOR_ENABLED,
+        notified_ipv4: state.notified_ipv4 || null
+      });
+    });
+    return;
+  }
+
   if (method === 'POST' && url === '/changeip') {
     let body = '';
     req.on('data', (chunk) => {
