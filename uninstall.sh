@@ -33,5 +33,8 @@ rm -rf "$STATE_DIR"
 echo "重新加载 systemd ..."
 systemctl daemon-reload
 
+echo "清理可能的失败状态（如存在）..."
+systemctl reset-failed changeip-http 2>/dev/null || true
+
 echo "=== 卸载完成 ==="
 echo "系统级改动已移除。如需彻底清理源码，请手动删除本仓库目录。"

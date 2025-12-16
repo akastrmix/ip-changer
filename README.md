@@ -95,6 +95,8 @@ apt install -y nodejs
         "notified_ipv4": "1.2.3.4"
       }
       ```
+    - 说明：
+      - `ip_monitor_enabled` 只有在 **监测功能已开启** 且同时配置了 `IP_REPORT_ENDPOINT` / `IP_REPORT_TOKEN` 时才会为 `true`（即监测实际处于工作状态）。
   - `POST /changeip`
     - 仅当 `CHANGEIP_ENABLED=1` 时可用；否则返回 `403`。
     - 请求头：`Content-Type: application/json`
@@ -133,6 +135,11 @@ apt install -y nodejs
 ### 3.1 IPv4 监测与上报说明
 
 当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**，若与“上次已成功上报的 IPv4”不同，则向 CarpoolNotifier 的内部接口上报一次（仅在变化时播报）。
+
+注意：
+
+- 为满足“只播报 IPv4”，本服务对公网 IP 获取与上报请求均强制使用 **IPv4 出站**（`family=4`）。
+- 若你设置了 `IP_MONITOR_ENABLED=1`，但未配置 `IP_REPORT_ENDPOINT` 或 `IP_REPORT_TOKEN`，服务会在启动日志中提示并自动禁用监测；此时 `/info` 返回的 `ip_monitor_enabled` 也会为 `false`。
 
 环境变量：
 

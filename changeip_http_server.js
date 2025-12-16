@@ -6,35 +6,66 @@
 //   http://<vps-ip>:8787/changeip  with JSON body: { "token": "your-secret" }
 
 const http = require('http');
+const crypto = require('crypto');
 const fs = require('fs');
 const httpClient = require('http');
 const httpsClient = require('https');
 const { URL } = require('url');
 const { spawn } = require('child_process');
 
-const PORT = parseInt(process.env.PORT || '8787', 10);
-const AUTH_TOKEN = process.env.AUTH_TOKEN || '';
+const PORT = parsePositiveInt(process.env.PORT, 8787, { min: 1, max: 65535 });
+const AUTH_TOKEN = (process.env.AUTH_TOKEN || '').trim();
 const CHANGEIP_SCRIPT = process.env.CHANGEIP_SCRIPT || '/root/changeip.sh';
-const REBOOT_DELAY_MINUTES = parseInt(process.env.REBOOT_DELAY_MINUTES || '16', 10);
+const REBOOT_DELAY_MINUTES = parsePositiveInt(process.env.REBOOT_DELAY_MINUTES, 16, { min: 1, max: 60 * 24 * 7 });
 
 const CHANGEIP_ENABLED = parseBool(process.env.CHANGEIP_ENABLED ?? '1');
 
 const IP_MONITOR_ENABLED = parseBool(process.env.IP_MONITOR_ENABLED ?? '0');
-const IP_MONITOR_INTERVAL_SECONDS = parseInt(process.env.IP_MONITOR_INTERVAL_SECONDS || '60', 10);
+const IP_MONITOR_INTERVAL_SECONDS = parsePositiveInt(process.env.IP_MONITOR_INTERVAL_SECONDS, 60, { min: 10, max: 24 * 60 * 60 });
 const IP_STATE_FILE = process.env.IP_STATE_FILE || '/var/lib/changeip-http/ip_state.json';
 const IP_REPORT_ENDPOINT = (process.env.IP_REPORT_ENDPOINT || '').trim();
 const IP_REPORT_TOKEN = (process.env.IP_REPORT_TOKEN || '').trim();
 const SERVER_LABEL = (process.env.SERVER_LABEL || '').trim() || 'SERVER';
 const REPORT_CHANNEL = (process.env.REPORT_CHANNEL || '').trim();
+const IP_MONITOR_ACTIVE = IP_MONITOR_ENABLED && !!IP_REPORT_ENDPOINT && !!IP_REPORT_TOKEN;
 
 if (!AUTH_TOKEN) {
   console.error('[changeip-http] AUTH_TOKEN is not set. Refusing to start.');
   process.exit(1);
 }
 
+const SHUTDOWN_BIN = resolveShutdownBin();
+
 function parseBool(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function parsePositiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const n = parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min) return min;
+  if (n > max) return max;
+  return n;
+}
+
+function safeTokenEquals(a, b) {
+  const aBuf = Buffer.from(String(a ?? ''), 'utf8');
+  const bBuf = Buffer.from(String(b ?? ''), 'utf8');
+  if (aBuf.length !== bBuf.length) return false;
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
+function resolveShutdownBin() {
+  const candidates = ['/usr/sbin/shutdown', '/sbin/shutdown'];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {
+      // ignore
+    }
+  }
+  return 'shutdown';
 }
 
 function jsonResponse(res, statusCode, payload) {
@@ -46,13 +77,52 @@ function jsonResponse(res, statusCode, payload) {
   res.end(body);
 }
 
+function readJsonBody(req, res, { maxBytes = 1024 } = {}) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let total = 0;
+    let responded = false;
+
+    req.on('data', (chunk) => {
+      if (responded) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        responded = true;
+        jsonResponse(res, 413, { ok: false, error: 'payload too large' });
+        req.destroy();
+        resolve(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      if (responded) return resolve(null);
+      const body = Buffer.concat(chunks, total).toString('utf8');
+      let parsed = null;
+      try {
+        parsed = body ? JSON.parse(body) : {};
+      } catch (_err) {
+        jsonResponse(res, 400, { ok: false, error: 'invalid json' });
+        return resolve(null);
+      }
+      resolve(parsed && typeof parsed === 'object' ? parsed : {});
+    });
+
+    req.on('error', () => resolve(null));
+  });
+}
+
 function scheduleReboot() {
   const delayMinutes = Math.max(REBOOT_DELAY_MINUTES, 1);
   console.log(`[changeip-http] scheduling reboot in ${delayMinutes} minutes...`);
 
-  const proc = spawn('shutdown', ['-r', `+${delayMinutes}`], {
+  const proc = spawn(SHUTDOWN_BIN, ['-r', `+${delayMinutes}`], {
     stdio: 'ignore',
     detached: true
+  });
+  proc.on('error', (err) => {
+    console.error('[changeip-http] failed to schedule reboot:', String(err));
   });
   proc.unref();
 }
@@ -109,33 +179,21 @@ function handleRequest(req, res) {
   }
 
   if (method === 'POST' && url === '/info') {
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 1024) {
-        req.destroy();
-      }
-    });
-    req.on('end', () => {
-      let parsed = null;
-      try {
-        parsed = body ? JSON.parse(body) : {};
-      } catch (_err) {
-        return jsonResponse(res, 400, { ok: false, error: 'invalid json' });
-      }
-
-      const token = parsed && typeof parsed.token === 'string' ? parsed.token : '';
-      if (!token || token !== AUTH_TOKEN) {
-        return jsonResponse(res, 403, { ok: false, error: 'forbidden' });
+    readJsonBody(req, res).then((parsed) => {
+      if (!parsed) return;
+      const token = typeof parsed.token === 'string' ? parsed.token.trim() : '';
+      if (!token || !safeTokenEquals(token, AUTH_TOKEN)) {
+        jsonResponse(res, 403, { ok: false, error: 'forbidden' });
+        return;
       }
 
       const state = loadState();
-      return jsonResponse(res, 200, {
+      jsonResponse(res, 200, {
         ok: true,
         server_label: SERVER_LABEL,
         channel: REPORT_CHANNEL,
         changeip_enabled: CHANGEIP_ENABLED,
-        ip_monitor_enabled: IP_MONITOR_ENABLED,
+        ip_monitor_enabled: IP_MONITOR_ACTIVE,
         notified_ipv4: state.notified_ipv4 || null
       });
     });
@@ -143,25 +201,12 @@ function handleRequest(req, res) {
   }
 
   if (method === 'POST' && url === '/changeip') {
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 1024) {
-        // too large, abort
-        req.destroy();
-      }
-    });
-    req.on('end', () => {
-      let parsed = null;
-      try {
-        parsed = body ? JSON.parse(body) : {};
-      } catch (_err) {
-        return jsonResponse(res, 400, { ok: false, error: 'invalid json' });
-      }
-
-      const token = parsed && typeof parsed.token === 'string' ? parsed.token : '';
-      if (!token || token !== AUTH_TOKEN) {
-        return jsonResponse(res, 403, { ok: false, error: 'forbidden' });
+    readJsonBody(req, res).then((parsed) => {
+      if (!parsed) return;
+      const token = typeof parsed.token === 'string' ? parsed.token.trim() : '';
+      if (!token || !safeTokenEquals(token, AUTH_TOKEN)) {
+        jsonResponse(res, 403, { ok: false, error: 'forbidden' });
+        return;
       }
 
       runChangeIp(res);
@@ -176,6 +221,10 @@ const server = http.createServer(handleRequest);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[changeip-http] listening on 0.0.0.0:${PORT}`);
+});
+server.on('error', (err) => {
+  console.error('[changeip-http] server error:', String(err));
+  process.exit(1);
 });
 
 function isValidIpv4(value) {
@@ -215,7 +264,12 @@ function requestText(urlString, { timeoutMs = 5000 } = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString);
     const lib = url.protocol === 'https:' ? httpsClient : httpClient;
-    const req = lib.request(url, { method: 'GET', timeout: timeoutMs, headers: { 'user-agent': 'ip-changer/1.0' } }, (res) => {
+    const req = lib.request(url, {
+      method: 'GET',
+      timeout: timeoutMs,
+      family: 4,
+      headers: { 'user-agent': 'ip-changer/1.0' }
+    }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
       res.on('end', () => {
@@ -264,6 +318,7 @@ function postJson(urlString, { token, body, timeoutMs = 8000 } = {}) {
     const req = lib.request(url, {
       method: 'POST',
       timeout: timeoutMs,
+      family: 4,
       headers: {
         'content-type': 'application/json',
         'content-length': String(payload.length),
@@ -290,7 +345,9 @@ function postJson(urlString, { token, body, timeoutMs = 8000 } = {}) {
 }
 
 async function reportIpChange(oldIpv4, newIpv4) {
-  if (!IP_REPORT_ENDPOINT || !IP_REPORT_TOKEN) return false;
+  if (!IP_REPORT_ENDPOINT || !IP_REPORT_TOKEN) {
+    return { ok: false, error: 'missing report endpoint/token' };
+  }
   const detectedAt = new Date().toISOString();
   const resp = await postJson(IP_REPORT_ENDPOINT, {
     token: IP_REPORT_TOKEN,
@@ -303,9 +360,11 @@ async function reportIpChange(oldIpv4, newIpv4) {
     }
   });
   if (!resp.ok) {
-    console.error('[changeip-http] ip report failed:', resp.status, resp.text || '');
+    const msg = `${resp.status} ${resp.text || ''}`.trim().slice(0, 300);
+    console.error('[changeip-http] ip report failed:', msg);
+    return { ok: false, error: msg || `status ${resp.status}` };
   }
-  return resp.ok;
+  return { ok: true, error: '' };
 }
 
 let monitorRunning = false;
@@ -328,15 +387,15 @@ async function monitorOnce() {
 
     if (ip === notified) return;
 
-    const ok = await reportIpChange(notified, ip);
+    const result = await reportIpChange(notified, ip);
     state.observed_ipv4 = ip;
     state.updated_at = new Date().toISOString();
-    if (ok) {
+    if (result.ok) {
       state.notified_ipv4 = ip;
       state.last_report_at = state.updated_at;
       state.last_report_error = '';
     } else {
-      state.last_report_error = state.updated_at;
+      state.last_report_error = result.error || state.updated_at;
     }
     saveState(state);
   } catch (err) {
