@@ -13,6 +13,16 @@
 
 ---
 
+## 文档导航（建议新开对话先读）
+
+- `AGENTS.md`：项目约束/不变量（给 AI/协作者看的“快速上手”）
+- `docs/SPEC.md`：行为规格（接口、状态文件、监测/上报规则）
+- `docs/INTEGRATION.md`：与 CarpoolNotifier 的对接契约
+- `docs/RUNBOOK.md`：运维手册（部署/更新/排障）
+- `CHANGELOG.md`：版本变更记录
+
+---
+
 ## 1. 文件结构与运行方式
 
 本仓库包含以下主要文件：
@@ -161,7 +171,7 @@ apt install -y nodejs
 
 ```bash
 cd /root
-git clone https://github.com/<your-name>/ip-changer.git
+git clone https://github.com/akastrmix/ip-changer.git
 cd ip-changer   # 仓库目录
 ```
 
@@ -208,7 +218,7 @@ chmod +x install.sh uninstall.sh
 2. 检查 `node` 命令是否存在。
 3. 询问配置项（有默认值）：
    - HTTP 端口（默认 `8787`）
-   - 是否启用 `/changeip`（不支持脚本换 IP 的 VPS 可关闭）
+   - 是否启用 `/changeip`（默认关闭；仅在 VPS 支持脚本换 IP 时才建议开启）
    - 若启用 `/changeip`：
      - `changeip.sh` 路径（默认 `/root/changeip.sh`）
      - 重启延迟分钟数（默认 `16`）
@@ -224,7 +234,8 @@ chmod +x install.sh uninstall.sh
 5. 创建 systemd 服务：`/etc/systemd/system/changeip-http.service`
 6. 运行：
    - `systemctl daemon-reload`
-   - `systemctl enable --now changeip-http`
+   - `systemctl enable changeip-http`
+   - `systemctl restart changeip-http`
 
 安装成功后，你可以检查服务状态：
 
