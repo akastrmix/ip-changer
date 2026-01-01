@@ -13,7 +13,7 @@
 ### B. 监测上报 + 一键换 IP（用于 CMHK 等支持脚本换 IP 的 VPS）
 
 - 开启 `/changeip`
-- 配置 `CHANGEIP_SCRIPT` 与 `REBOOT_DELAY_MINUTES`
+- 配置 `CHANGEIP_SCRIPT` 与 `REBOOT_DELAY_MINUTES`（可设为 `-1` 禁用重启）
 - 开启 IPv4 监测上报（推荐，用于自动播报与会话编辑）
 
 ## 2. 标准安装（Debian/Ubuntu）
@@ -108,6 +108,12 @@ curl -X POST http://127.0.0.1:8787/info -H 'Content-Type: application/json' -d '
 
 ### 6.4 `/changeip`（会触发真实重启，谨慎）
 
+如果你只想测试脚本触发但不想重启，可先在 `/etc/default/changeip-http` 设置：
+
+- `REBOOT_DELAY_MINUTES=-1`
+
+并执行 `systemctl restart changeip-http` 后再测试。
+
 ```bash
 curl -X POST http://127.0.0.1:8787/changeip -H 'Content-Type: application/json' -d '{"token":"<AUTH_TOKEN>"}'
 ```
@@ -150,4 +156,3 @@ journalctl -u changeip-http -n 200 --no-pager
 
 - bot 没进频道或权限不够（建议设为管理员并允许编辑消息）
 - `REPORT_CHANNEL` 写错：公有用 `@xxx`，私有用 `-100...`
-

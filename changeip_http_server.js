@@ -16,7 +16,7 @@ const { spawn } = require('child_process');
 const PORT = parsePositiveInt(process.env.PORT, 8787, { min: 1, max: 65535 });
 const AUTH_TOKEN = (process.env.AUTH_TOKEN || '').trim();
 const CHANGEIP_SCRIPT = process.env.CHANGEIP_SCRIPT || '/root/changeip.sh';
-const REBOOT_DELAY_MINUTES = parsePositiveInt(process.env.REBOOT_DELAY_MINUTES, 16, { min: 1, max: 60 * 24 * 7 });
+const REBOOT_DELAY_MINUTES = parseRebootDelayMinutes(process.env.REBOOT_DELAY_MINUTES, 16, { min: 1, max: 60 * 24 * 7 });
 
 const CHANGEIP_ENABLED = parseBool(process.env.CHANGEIP_ENABLED ?? '1');
 
@@ -47,6 +47,12 @@ function parsePositiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTE
   if (n < min) return min;
   if (n > max) return max;
   return n;
+}
+
+function parseRebootDelayMinutes(value, fallback, { min = 1, max = 60 * 24 * 7 } = {}) {
+  const raw = String(value ?? '').trim();
+  if (raw === '-1') return -1; // sentinel: disable reboot
+  return parsePositiveInt(raw, fallback, { min, max });
 }
 
 function safeTokenEquals(a, b) {
@@ -114,6 +120,10 @@ function readJsonBody(req, res, { maxBytes = 1024 } = {}) {
 }
 
 function scheduleReboot() {
+  if (REBOOT_DELAY_MINUTES === -1) {
+    console.log('[changeip-http] reboot disabled (REBOOT_DELAY_MINUTES=-1)');
+    return { scheduled: false, delayMinutes: -1 };
+  }
   const delayMinutes = Math.max(REBOOT_DELAY_MINUTES, 1);
   console.log(`[changeip-http] scheduling reboot in ${delayMinutes} minutes...`);
 
@@ -125,6 +135,7 @@ function scheduleReboot() {
     console.error('[changeip-http] failed to schedule reboot:', String(err));
   });
   proc.unref();
+  return { scheduled: true, delayMinutes };
 }
 
 function runChangeIp(res) {
@@ -160,14 +171,18 @@ function runChangeIp(res) {
 
   proc.unref();
 
-  scheduleReboot();
+  const reboot = scheduleReboot();
 
   jsonResponse(res, 200, {
     ok: true,
-    message: `changeip started, reboot scheduled in ${REBOOT_DELAY_MINUTES} minutes`,
+    message: reboot.scheduled
+      ? `changeip started, reboot scheduled in ${reboot.delayMinutes} minutes`
+      : 'changeip started, reboot disabled',
     server_label: SERVER_LABEL,
     channel: REPORT_CHANNEL,
-    old_ipv4: loadState().notified_ipv4 || null
+    old_ipv4: loadState().notified_ipv4 || null,
+    reboot_scheduled: reboot.scheduled,
+    reboot_delay_minutes: reboot.scheduled ? reboot.delayMinutes : -1
   });
 }
 

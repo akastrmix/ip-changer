@@ -6,6 +6,12 @@
 
 - （暂无）
 
+## 0.4.0
+
+- 新增：支持 `REBOOT_DELAY_MINUTES=-1` 禁用重启（仍可触发脚本）。
+- 变更：安装脚本支持输入 `-1` 并在安装结果中明确展示“重启已禁用”。
+- 文档：同步更新 README / SPEC / RUNBOOK 对该行为的说明。
+
 ## 0.3.0
 
 - 文档：新增 `AGENTS.md` 与 `docs/`（SPEC / INTEGRATION / RUNBOOK），用于快速恢复上下文与降低维护成本。

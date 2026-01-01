@@ -40,7 +40,7 @@ HTTP 服务：
 
 - `CHANGEIP_ENABLED`：`1/0`（默认建议 `0`）
 - `CHANGEIP_SCRIPT`：脚本绝对路径（默认 `/root/changeip.sh`）
-- `REBOOT_DELAY_MINUTES`：脚本触发后，几分钟后重启（默认 `16`，范围 `1-10080`）
+- `REBOOT_DELAY_MINUTES`：脚本触发后，几分钟后重启（默认 `16`；设置为 `-1` 表示不重启；否则范围 `1-10080`）
 
 IPv4 监测与上报（可选）：
 
@@ -84,12 +84,15 @@ IPv4 监测与上报（可选）：
   - spawn 失败：`500` `failed to spawn changeip script`
 - 成功：
   - 后台执行：`/bin/bash <CHANGEIP_SCRIPT>`（不要求可执行位，但要求可读）
-  - 安排重启：`shutdown -r +<REBOOT_DELAY_MINUTES>`
+  - 重启行为：
+    - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
+    - 否则安排重启：`shutdown -r +<REBOOT_DELAY_MINUTES>`
   - 返回 `200`，包含：
     - `message`
     - `server_label`
     - `channel`
     - `old_ipv4`（来自状态文件 `notified_ipv4`，可为 `null`）
+    - `reboot_scheduled` / `reboot_delay_minutes`（用于调试，向后兼容新增字段）
 
 ## 5. IPv4 监测与上报规则
 
@@ -136,4 +139,3 @@ JSON 对象（字段可能随版本增加，但保持向后兼容）：
 - `last_report_error`：最近一次上报失败的错误摘要（可选）
 
 写入采用 `*.tmp` + rename 的方式，尽量避免半写入。
-

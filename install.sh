@@ -22,6 +22,28 @@ prompt_int() {
   done
 }
 
+prompt_int_or_neg1() {
+  local prompt="$1"
+  local default="$2"
+  local min="$3"
+  local max="$4"
+  local value=""
+
+  while true; do
+    read -rp "$prompt [默认 $default]: " value
+    value="${value:-$default}"
+    if [ "$value" = "-1" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+    if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge "$min" ] && [ "$value" -le "$max" ]; then
+      printf '%s' "$value"
+      return 0
+    fi
+    echo "输入无效，请输入 -1（不重启）或 $min-$max 之间的数字。"
+  done
+}
+
 env_quote() {
   local s="$1"
   s="${s//\\/\\\\}"
@@ -64,7 +86,7 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
     echo "你仍然可以继续安装，但 /changeip 将在脚本存在之前返回 500。"
   fi
 
-  REBOOT_DELAY_MINUTES="$(prompt_int "重启延迟（分钟）" "16" "1" "10080")"
+  REBOOT_DELAY_MINUTES="$(prompt_int_or_neg1 "重启延迟（分钟，-1 表示不重启）" "16" "1" "10080")"
 fi
 
 read -rp "共享密钥 AUTH_TOKEN（留空则自动生成）: " AUTH_TOKEN
@@ -183,7 +205,11 @@ echo "AUTH_TOKEN: $AUTH_TOKEN"
 if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   echo "已启用 /changeip"
   echo "changeip.sh 路径: $CHANGEIP_SCRIPT"
-  echo "重启延迟: $REBOOT_DELAY_MINUTES 分钟"
+  if [ "$REBOOT_DELAY_MINUTES" = "-1" ]; then
+    echo "重启: 已禁用（REBOOT_DELAY_MINUTES=-1）"
+  else
+    echo "重启延迟: $REBOOT_DELAY_MINUTES 分钟"
+  fi
 else
   echo "未启用 /changeip"
 fi

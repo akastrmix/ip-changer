@@ -119,18 +119,22 @@ apt install -y nodejs
       - 不满足则返回 `403`。
     - 通过校验后：
       - 后台执行：`/bin/bash <CHANGEIP_SCRIPT>`
-      - 立即安排系统重启：
-        ```bash
-        shutdown -r +<REBOOT_DELAY_MINUTES>
-        ```
+      - 重启行为：
+        - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
+        - 否则安排系统重启：
+          ```bash
+          shutdown -r +<REBOOT_DELAY_MINUTES>
+          ```
       - 返回：
         ```json
         {
           "ok": true,
-          "message": "changeip started, reboot scheduled in <N> minutes",
+          "message": "changeip started, ...",
           "server_label": "CMHK",
           "channel": "@your_channel",
-          "old_ipv4": "1.2.3.4"
+          "old_ipv4": "1.2.3.4",
+          "reboot_scheduled": true,
+          "reboot_delay_minutes": 16
         }
         ```
 
@@ -139,7 +143,7 @@ apt install -y nodejs
 - `AUTH_TOKEN`：共享密钥，必须设置。用于认证来自 Telegram 机器人的请求。
 - `CHANGEIP_SCRIPT`：`changeip.sh` 的绝对路径（默认 `/root/changeip.sh`）。
 - `PORT`：HTTP 监听端口（默认 `8787`）。
-- `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（默认 `16`，建议大于脚本内部的等待时间）。
+- `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（默认 `16`；设置为 `-1` 表示不执行重启）。
 - `CHANGEIP_ENABLED`：是否启用 `/changeip` 接口（`1` 启用，`0` 关闭）。
 
 ### 3.1 IPv4 监测与上报说明
@@ -221,7 +225,7 @@ chmod +x install.sh uninstall.sh
    - 是否启用 `/changeip`（默认关闭；仅在 VPS 支持脚本换 IP 时才建议开启）
    - 若启用 `/changeip`：
      - `changeip.sh` 路径（默认 `/root/changeip.sh`）
-     - 重启延迟分钟数（默认 `16`）
+     - 重启延迟分钟数（默认 `16`；输入 `-1` 表示不执行重启）
    - 共享密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
    - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空）
