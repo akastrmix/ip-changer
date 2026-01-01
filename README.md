@@ -209,7 +209,13 @@ apt install -y nodejs
 
 ### 4.4 运行安装脚本
 
-赋予脚本可执行权限并运行：
+运行安装脚本：
+
+```bash
+./install.sh
+```
+
+如果提示 `Permission denied`，再执行：
 
 ```bash
 chmod +x install.sh uninstall.sh

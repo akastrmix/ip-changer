@@ -10,6 +10,7 @@
 
 - 新增：支持 `REBOOT_DELAY_MINUTES=-1` 禁用重启（仍可触发脚本）。
 - 变更：安装脚本支持输入 `-1` 并在安装结果中明确展示“重启已禁用”。
+- 运维：将 `install.sh` / `uninstall.sh` 标记为可执行，避免在 VPS 上 `chmod` 导致 `git pull` 误判为本地改动。
 - 文档：同步更新 README / SPEC / RUNBOOK 对该行为的说明。
 
 ## 0.3.0

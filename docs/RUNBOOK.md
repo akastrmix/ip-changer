@@ -31,6 +31,12 @@ apt install -y nodejs
 cd /root
 git clone https://github.com/akastrmix/ip-changer.git
 cd ip-changer
+./install.sh
+```
+
+如果提示 `Permission denied`，再执行：
+
+```bash
 chmod +x install.sh uninstall.sh
 ./install.sh
 ```
