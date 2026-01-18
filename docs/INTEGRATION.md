@@ -39,6 +39,15 @@ CarpoolNotifier 配置：
 - `POST /changeip`
 - JSON `{ "token": "<AUTH_TOKEN>" }`
 
+返回（节选）：
+
+- `reboot_scheduled`：是否安排重启
+- `reboot_delay_minutes`：重启延迟分钟；当 `REBOOT_DELAY_MINUTES=-1` 时返回 `-1`
+
+说明：
+
+- 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，脚本仍会触发，但**不会**执行重启。
+
 ### 2.2 `/info` 查询
 
 CarpoolNotifier 用它来获取：
@@ -104,4 +113,3 @@ VPS 侧配置：
 - Worker 返回 `401 unauthorized`：`IP_REPORT_TOKEN` 不一致
 - `ip-changer /info` 或 `/changeip` 返回 `403`：`AUTH_TOKEN` 不一致或 `/changeip` 未启用
 - 频道无消息：bot 未进频道/无权限，或 `REPORT_CHANNEL` 填写格式不对
-
