@@ -110,7 +110,9 @@ curl -X POST http://127.0.0.1:8787/info -H 'Content-Type: application/json' -d '
 若要验证 `ip-changer → Worker` 是否通：
 
 - 检查日志：`journalctl -u changeip-http -n 200 --no-pager`
-- 观察 `ip report failed:` 是否出现
+- 检查状态文件：`cat /var/lib/changeip-http/ip_state.json`
+  - 若上报失败，`last_report_error` 会记录最近一次失败的错误摘要
+  - 若一直未能初始化基线，说明公网 IPv4 获取可能失败（可查看日志中的 `monitor error:`）
 
 ### 6.4 `/changeip`（会触发真实重启，谨慎）
 
@@ -129,7 +131,7 @@ curl -X POST http://127.0.0.1:8787/changeip -H 'Content-Type: application/json' 
 - **强烈建议**只在受控网络开放 `PORT`：
   - 仅监测上报模式：可直接把入站 `8787` 关掉（不影响出站上报）
   - 一键换 IP 模式：建议用防火墙限制来源（只允许你的管理 IP 或可信反代）
-- `AUTH_TOKEN` / `IP_REPORT_TOKEN` 必须随机且保密
+- `AUTH_TOKEN` / `IP_EVENTS_TOKEN` 必须随机且保密
 - token 轮换：
   - 修改 VPS：`/etc/default/changeip-http` 后重启
   - 同步更新 Worker/CarpoolNotifier 对应的 token
@@ -151,14 +153,24 @@ journalctl -u changeip-http -n 200 --no-pager
 
 ### `/info` 或 `/changeip` 返回 403
 
-- token 不匹配（CarpoolNotifier 的 `CHANGEIP_TOKEN` 与 VPS 的 `AUTH_TOKEN` 必须一致）
+- token 不匹配（CarpoolNotifier 中该 `SERVER_LABEL` 的 token 与 VPS 的 `AUTH_TOKEN` 必须一致；通常在 `CHANGEIP_TOKENS_JSON` 里配置）
 - 或 `/changeip` 未启用（`CHANGEIP_ENABLED=0`）
 
 ### Worker 返回 401
 
-- `IP_REPORT_TOKEN` 不一致（多台 VPS 建议共用同一个 token）
+- `IP_EVENTS_TOKEN` 不一致（多台 VPS 建议共用同一个 token）
 
 ### 频道收不到消息
 
 - bot 没进频道或权限不够（建议设为管理员并允许编辑消息）
 - `REPORT_CHANNEL` 写错：公有用 `@xxx`，私有用 `-100...`
+
+## 9. 上报接口（/internal/ip-events）
+
+你已确认：不做向下兼容，因此 `ip-changer` 只上报到 `/internal/ip-events`：
+
+1) CarpoolNotifier：配置 secret `IP_EVENTS_TOKEN`
+2) VPS ip-changer：配置并启用：
+   - `IP_EVENTS_ENABLED=1`
+   - `IP_EVENTS_ENDPOINT=https://<worker>/internal/ip-events`
+   - `IP_EVENTS_TOKEN=<same as worker secret>`

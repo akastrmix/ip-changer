@@ -2,6 +2,12 @@
 
 本文档描述 `ip-changer` 与 CarpoolNotifier（Cloudflare Worker 上的 Telegram bot）之间的接口契约与配置方式，目标是：多 VPS 可扩容、低耦合、易排障。
 
+破坏性更新说明：
+
+- 你已确认不做向下兼容，因此本项目以 **事件流** 形式与 CarpoolNotifier 对接：
+  - 唯一上报入口：`POST /internal/ip-events`
+  - 旧的 `/internal/ip-changed` / `IP_REPORT_*` 不再使用
+
 ## 1. 数据/身份约定
 
 ### 1.1 `SERVER_LABEL`
@@ -23,16 +29,21 @@
 
 注意：bot 必须被拉入频道，并具备发送/编辑消息权限（建议设为管理员）。
 
+可留空：
+
+- `REPORT_CHANNEL` 可以留空，表示不向频道播报（CarpoolNotifier 仍会通知管理员，并使用事件流收敛会话/锁）。
+
 ## 2. 方向 A：CarpoolNotifier → ip-changer（可选一键换 IP）
 
 ### 2.1 `/changeip` 触发（可选）
 
 前提：VPS 上 `CHANGEIP_ENABLED=1`。
 
-CarpoolNotifier 配置：
+CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容）：
 
-- `CHANGEIP_ENDPOINT`：例如 `http://<VPS_IP>:8787/changeip`
-- `CHANGEIP_TOKEN`：必须等于 VPS 上 `AUTH_TOKEN`
+- `CHANGEIP_ENDPOINTS_JSON`（vars）：例如 `{"CMHK":"http://<VPS_IP>:8787/changeip"}`
+- `CHANGEIP_TOKENS_JSON`（secret）：例如 `{"CMHK":"<AUTH_TOKEN>"}`（必须等于 VPS 上 `AUTH_TOKEN`）
+- `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记为 `script`（例如 `CMHK:script`）
 
 请求：
 
@@ -61,40 +72,78 @@ CarpoolNotifier 用它来获取：
 - `POST /info`
 - JSON `{ "token": "<AUTH_TOKEN>" }`
 
-## 3. 方向 B：ip-changer → CarpoolNotifier（IPv4 变化上报）
+## 3. 方向 B：ip-changer → CarpoolNotifier（事件流上报）
+
+你已确认：不做向下兼容，因此本项目以 **`/internal/ip-events`** 作为唯一上报入口（旧的 `/internal/ip-changed` / `IP_REPORT_*` 不再使用）。
 
 ### 3.1 Worker 内部接口
 
-CarpoolNotifier 需要实现内部路由（示例）：
-
-- `POST /internal/ip-changed`
-  - Header：`Authorization: Bearer <IP_REPORT_TOKEN>`
+- `POST /internal/ip-events`
+  - Header：`Authorization: Bearer <IP_EVENTS_TOKEN>`
 
 Worker 侧配置（建议使用 secret）：
 
-- `IP_REPORT_TOKEN`
+- `IP_EVENTS_TOKEN`
 
 ### 3.2 VPS 上报配置
 
 VPS 侧配置：
 
-- `IP_MONITOR_ENABLED=1`
-- `IP_REPORT_ENDPOINT=https://<worker>/internal/ip-changed`
-- `IP_REPORT_TOKEN=<same as worker secret>`
+- `IP_EVENTS_ENABLED=1`
+- `IP_EVENTS_ENDPOINT=https://<worker>/internal/ip-events`
+- `IP_EVENTS_TOKEN=<same as worker secret>`
 - `SERVER_LABEL=<unique label>`
 - `REPORT_CHANNEL=@xxx` 或 `-100...`
 
+与 `IP_MONITOR_*` 的关系：
+
+- `IP_MONITOR_ENABLED=1`：启用“自然变化”监测，但上报事件改为 `ipv4_changed`（仍然只在变化时上报）
+- “换 IP 会话”的状态上报使用 `change_*` 事件，即使最终 IP 没变也要上报 `change_no_change`/`change_failed`
+
 重要建议：
 
-- **多台 VPS 建议共用同一个 `IP_REPORT_TOKEN`**（Worker 目前是全局单钥匙）。
-  - 如果未来需要细粒度权限（每台 VPS 单独 token），再扩展 Worker 鉴权逻辑即可。
+- 多台 VPS 可以共用同一个 `IP_EVENTS_TOKEN`（Worker 目前按全局单钥匙设计）。
+  - 如未来需要每台 VPS 单独 token，再扩展 Worker 鉴权逻辑即可。
+
+判定规则（v1，与你确认的口径一致）：
+
+- 脚本开始立刻上报 `change_started`
+- 触发后等待 `CHANGE_MONITOR_START_DELAY_SECONDS` 再尝试获取公网 IPv4
+  - 若设置了重启延迟（`REBOOT_DELAY_MINUTES=1..15`），则会在“预计重启时间”之后再加上该延迟，避免在重启前误判为 `change_no_change`
+- 获取到合法公网 IPv4 后即可判定终态：
+  - `!= old_ipv4` → `change_succeeded`
+  - `== old_ipv4`：
+    - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
+    - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免脚本执行中误判，会等待一次断网/恢复或超时后才判定 `change_no_change`
+- 10 分钟内始终拿不到公网 IPv4 → `change_failed`（`no_ipv4_observed`）
+
+补充：`op_id`
+
+- `op_id` 是“一次换 IP 操作”的唯一标识，建议把它视为该次换 IP 的“会话/操作 ID”。
+- `POST /changeip` 成功返回体里必须包含 `op_id`，并且后续所有 `change_*` 事件都要带相同 `op_id`。
+
+### B2.3 上报 payload
+
+最小必需字段：
+
+```json
+{
+  "server_label": "CMHK",
+  "channel": "-1001234567890",
+  "op_id": "20260128T061500Z_cmhk_7f2c0f",
+  "ts": "2026-01-28T06:15:00.000Z",
+  "event": "change_started"
+}
+```
+
+事件类型与可选字段见本仓库：`docs/SPEC.md`。
 
 ## 4. 典型流程
 
 ### 4.1 自然 IPv4 变化
 
 1. `ip-changer` 发现 IPv4 变化
-2. `ip-changer` 调用 Worker `/internal/ip-changed`
+2. `ip-changer` 调用 Worker `/internal/ip-events`（`event=ipv4_changed`）
 3. CarpoolNotifier：
    - 若当前存在“换 IP 会话”，则编辑会话消息并追加频道行
    - 否则向频道 + 管理员广播一条“公网 IP 变化”消息，并（可选）进入锁定期防止重复触发
@@ -110,6 +159,6 @@ VPS 侧配置：
 
 ## 5. 常见错误与定位
 
-- Worker 返回 `401 unauthorized`：`IP_REPORT_TOKEN` 不一致
+- Worker 返回 `401 unauthorized`：`IP_EVENTS_TOKEN` 不一致
 - `ip-changer /info` 或 `/changeip` 返回 `403`：`AUTH_TOKEN` 不一致或 `/changeip` 未启用
 - 频道无消息：bot 未进频道/无权限，或 `REPORT_CHANNEL` 填写格式不对

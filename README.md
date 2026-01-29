@@ -101,12 +101,14 @@ apt install -y nodejs
         "server_label": "CMHK",
         "channel": "@your_channel",
         "changeip_enabled": true,
+        "ip_events_enabled": true,
         "ip_monitor_enabled": true,
         "notified_ipv4": "1.2.3.4"
       }
       ```
     - 说明：
-      - `ip_monitor_enabled` 只有在 **监测功能已开启** 且同时配置了 `IP_REPORT_ENDPOINT` / `IP_REPORT_TOKEN` 时才会为 `true`（即监测实际处于工作状态）。
+      - `ip_events_enabled`：事件流上报是否可用（需要 `IP_EVENTS_ENABLED=1` 且配置了 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN`）。
+      - `ip_monitor_enabled`：IPv4 变化监测是否可用（需要 `IP_MONITOR_ENABLED=1` 且 `ip_events_enabled=true`）。
   - `POST /changeip`
     - 仅当 `CHANGEIP_ENABLED=1` 时可用；否则返回 `403`。
     - 请求头：`Content-Type: application/json`
@@ -129,12 +131,13 @@ apt install -y nodejs
         ```json
         {
           "ok": true,
+          "op_id": "20260128T061500Z_cmhk_7f2c0f",
           "message": "changeip started, ...",
           "server_label": "CMHK",
           "channel": "@your_channel",
           "old_ipv4": "1.2.3.4",
           "reboot_scheduled": true,
-          "reboot_delay_minutes": 16
+          "reboot_delay_minutes": 1
         }
         ```
 
@@ -143,7 +146,7 @@ apt install -y nodejs
 - `AUTH_TOKEN`：共享密钥，必须设置。用于认证来自 Telegram 机器人的请求。
 - `CHANGEIP_SCRIPT`：`changeip.sh` 的绝对路径（默认 `/root/changeip.sh`）。
 - `PORT`：HTTP 监听端口（默认 `8787`）。
-- `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（默认 `16`；设置为 `-1` 表示不执行重启）。
+- `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（设置为 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）。
 - `CHANGEIP_ENABLED`：是否启用 `/changeip` 接口（`1` 启用，`0` 关闭）。
 
 ### 3.1 IPv4 监测与上报说明
@@ -153,17 +156,18 @@ apt install -y nodejs
 注意：
 
 - 为满足“只播报 IPv4”，本服务对公网 IP 获取与上报请求均强制使用 **IPv4 出站**（`family=4`）。
-- 若你设置了 `IP_MONITOR_ENABLED=1`，但未配置 `IP_REPORT_ENDPOINT` 或 `IP_REPORT_TOKEN`，服务会在启动日志中提示并自动禁用监测；此时 `/info` 返回的 `ip_monitor_enabled` 也会为 `false`。
+- 若你设置了 `IP_MONITOR_ENABLED=1`，但未配置 `IP_EVENTS_ENDPOINT` 或 `IP_EVENTS_TOKEN`，服务会在启动日志中提示并自动禁用监测；此时 `/info` 返回的 `ip_monitor_enabled` 也会为 `false`。
 
 环境变量：
 
 - `IP_MONITOR_ENABLED`：`1/0`，启用/关闭监测上报
 - `IP_MONITOR_INTERVAL_SECONDS`：检测间隔秒数（默认 `60`）
 - `IP_STATE_FILE`：状态文件路径（默认 `/var/lib/changeip-http/ip_state.json`）
-- `IP_REPORT_ENDPOINT`：CarpoolNotifier 上报地址（例如 `https://<worker>/internal/ip-changed`）
-- `IP_REPORT_TOKEN`：上报鉴权密钥（HTTP Header：`Authorization: Bearer <token>`）
+- `IP_EVENTS_ENABLED`：`1/0`，启用/关闭事件流上报（`POST /internal/ip-events`）
+- `IP_EVENTS_ENDPOINT`：CarpoolNotifier 上报地址（例如 `https://<worker>/internal/ip-events`）
+- `IP_EVENTS_TOKEN`：上报鉴权密钥（HTTP Header：`Authorization: Bearer <token>`）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
-- `REPORT_CHANNEL`：播报频道（`@channel_username`）
+- `REPORT_CHANNEL`：播报目标（支持 `@channel_username` 或私有频道/超级群 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员）
 
 ---
 
@@ -231,14 +235,16 @@ chmod +x install.sh uninstall.sh
    - 是否启用 `/changeip`（默认关闭；仅在 VPS 支持脚本换 IP 时才建议开启）
    - 若启用 `/changeip`：
      - `changeip.sh` 路径（默认 `/root/changeip.sh`）
-     - 重启延迟分钟数（默认 `16`；输入 `-1` 表示不执行重启）
+     - 重启延迟分钟数（默认 `1`；输入 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）
    - 共享密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
    - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空）
-   - 是否启用 IPv4 监测上报（建议开启以实现自动播报）
-   - 若启用监测上报：
-     - 上报地址 `IP_REPORT_ENDPOINT`（CarpoolNotifier 内部接口）
-     - 上报密钥 `IP_REPORT_TOKEN`（留空则自动生成）
+   - 是否启用事件流上报（ip-events）
+   - 若启用事件流上报：
+     - 上报地址 `IP_EVENTS_ENDPOINT`（CarpoolNotifier 内部接口：`/internal/ip-events`）
+     - 上报密钥 `IP_EVENTS_TOKEN`（留空则自动生成）
+   - 是否启用 IPv4 变化监测（仅在变化时上报）
+   - 若启用 IPv4 变化监测：
      - 检测间隔秒数（默认 `60`）
 4. 创建环境配置文件：`/etc/default/changeip-http`
 5. 创建 systemd 服务：`/etc/systemd/system/changeip-http.service`
@@ -326,17 +332,17 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 1. 在 VPS 上按本 README 安装并启动本服务。
 2. 记住以下两项配置：
    - `AUTH_TOKEN`：安装时设置或自动生成的值。
+   - `SERVER_LABEL`：本机标签（例如 `CMHK` / `HKT` / `HKBN`），用于在 bot 侧区分不同服务器。
    - `PORT`：HTTP 端口（默认 `8787`）。
-3. 在 CarpoolNotifier 的运行环境中配置以下环境变量：
-   - `CHANGEIP_ENDPOINT`：
-     - 例如：`http://<VPS_IP>:8787/changeip`
-     - 如果 CarpoolNotifier 与本服务部署在同一台 VPS，可使用 `http://127.0.0.1:8787/changeip`
-   - `CHANGEIP_TOKEN`：
-     - 与上一步中的 `AUTH_TOKEN` 完全一致。
-4. 重新部署 / 启动 CarpoolNotifier，使其读取新的环境变量。
+3. 在 CarpoolNotifier（Cloudflare Worker）中为该 `SERVER_LABEL` 配置“地址 + token”映射：
+   - `CHANGEIP_ENDPOINTS_JSON`（vars）：`{"<SERVER_LABEL>":"http://<VPS_IP>:8787/changeip"}`
+   - `CHANGEIP_TOKENS_JSON`（secret）：`{"<SERVER_LABEL>":"<AUTH_TOKEN>"}`
+   - `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记为 `script`（例如 `CMHK:script`）
+   - 可选：`CHANGEIP_INFO_ENDPOINTS_JSON`（vars）：如不写，CarpoolNotifier 会把 `/changeip` 自动推导为 `/info`
+4. 重新部署 / 启动 CarpoolNotifier，使其读取新的配置。
 5. 用管理员账号向 Telegram 机器人发送 `/changeip`：
    - 机器人会校验你是否管理员。
-   - 向 `CHANGEIP_ENDPOINT` 发送带 `CHANGEIP_TOKEN` 的 POST 请求。
+   - 按 `SERVER_LABEL` 找到对应的 ip-changer 服务器并触发换 IP。
    - 通过后提示“已收到更换 IP 请求……约 15 分钟后自动重启”。
    - VPS 后台执行 `changeip.sh` 并在设定时间后重启。
 
@@ -348,15 +354,15 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 
 ### 6.1 IPv4 自动播报对接
 
-`ip-changer` 会向 CarpoolNotifier 的内部接口上报 IPv4 变化，因此你需要在 Cloudflare Worker 中配置密钥：
+`ip-changer` 会向 CarpoolNotifier 的内部接口上报事件流（自然变化 + 换 IP 状态），因此你需要在 Cloudflare Worker 中配置密钥：
 
-- `IP_REPORT_TOKEN`（secret）：与 VPS 上 `IP_REPORT_TOKEN` 完全一致
+- `IP_EVENTS_TOKEN`（secret）：与 VPS 上 `IP_EVENTS_TOKEN` 完全一致
 
 并确保 Worker 中已实现内部路由：
 
-- `POST /internal/ip-changed`（鉴权：`Authorization: Bearer <IP_REPORT_TOKEN>`）
+- `POST /internal/ip-events`（鉴权：`Authorization: Bearer <IP_EVENTS_TOKEN>`）
 
-随后，当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会自动播报到 `REPORT_CHANNEL`（以及管理员）。
+随后，当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会自动播报到 `REPORT_CHANNEL`（若设置），并通知管理员。
 
 ---
 
@@ -384,8 +390,9 @@ systemctl restart changeip-http
   - `REBOOT_DELAY_MINUTES`
   - `IP_MONITOR_ENABLED`
   - `IP_MONITOR_INTERVAL_SECONDS`
-  - `IP_REPORT_ENDPOINT`
-  - `IP_REPORT_TOKEN`
+  - `IP_EVENTS_ENABLED`
+  - `IP_EVENTS_ENDPOINT`
+  - `IP_EVENTS_TOKEN`
   - `SERVER_LABEL`
   - `REPORT_CHANNEL`
 - 然后重启服务：
@@ -394,7 +401,7 @@ systemctl restart changeip-http
 systemctl restart changeip-http
 ```
 
-如果你修改了 `AUTH_TOKEN`，记得同步更新 CarpoolNotifier 的 `CHANGEIP_TOKEN`。
+如果你修改了 `AUTH_TOKEN`，记得同步更新 CarpoolNotifier 中该 `SERVER_LABEL` 对应的 `CHANGEIP_TOKENS_JSON` 条目。
 
 ---
 
@@ -406,8 +413,9 @@ systemctl restart changeip-http
 - **Q: 可以不用 systemd，直接前台运行吗？**  
   A: 可以。在仓库目录直接运行：
   ```bash
-  AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=16 \
-  IP_MONITOR_ENABLED=1 IP_REPORT_ENDPOINT=... IP_REPORT_TOKEN=... SERVER_LABEL=... REPORT_CHANNEL=@... \
+  AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=1 \
+  IP_EVENTS_ENABLED=1 IP_EVENTS_ENDPOINT=... IP_EVENTS_TOKEN=... \
+  IP_MONITOR_ENABLED=1 IP_MONITOR_INTERVAL_SECONDS=60 SERVER_LABEL=... REPORT_CHANNEL=@... \
   node changeip_http_server.js
   ```
   即可启动服务，但不具备开机自启与守护功能。

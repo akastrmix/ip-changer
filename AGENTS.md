@@ -23,7 +23,9 @@
 ## 仓库文件地图
 
 - `changeip_http_server.js`
-  - 常驻 HTTP 服务（/ /info /changeip）+ IPv4 变化监测 + 上报。
+  - 常驻 HTTP 服务（/ /info /changeip）+ IPv4 变化监测 + 事件流上报。
+- `src/`
+  - 纯 Node 标准库模块（配置解析/状态文件/IPv4 获取/事件上报/监测循环等），便于维护但不引入依赖。
 - `install.sh`
   - 写入 `/etc/default/changeip-http`，创建 `/etc/systemd/system/changeip-http.service`，启用服务。
 - `uninstall.sh`
@@ -35,7 +37,7 @@
   - `INTEGRATION.md`：与 CarpoolNotifier 的对接契约
   - `RUNBOOK.md`：运维手册（部署/更新/排障）
 
-## 接口契约（务必保持兼容）
+## 接口契约（字段尽量保持稳定）
 
 `ip-changer` 对外暴露：
 
@@ -45,9 +47,11 @@
 
 `ip-changer` 上报到 CarpoolNotifier：
 
-- `POST <IP_REPORT_ENDPOINT>`（通常为 Worker 的 `/internal/ip-changed`）
-  - Header：`Authorization: Bearer <IP_REPORT_TOKEN>`
-  - Body：`{ server_label, channel, old_ipv4, new_ipv4, detected_at }`
+- `POST <IP_EVENTS_ENDPOINT>`（Worker 的 `/internal/ip-events`）
+  - Header：`Authorization: Bearer <IP_EVENTS_TOKEN>`
+  - Body（最小字段）：`{ server_label, channel, op_id, ts, event, ... }`
+    - 自然变化：`event=ipv4_changed` + `old_ipv4/new_ipv4`
+    - 换 IP 会话：`event=change_started/change_succeeded/change_no_change/change_failed`（见 `docs/SPEC.md`）
 
 上述字段名/语义应尽量保持稳定；若必须变更，需同步更新文档与 CarpoolNotifier。
 
@@ -57,7 +61,9 @@
 
 - `/etc/systemd/system/changeip-http.service`
 - `/etc/default/changeip-http`
-- `/var/lib/changeip-http/`（仅在启用监测时，用于保存上次已上报 IPv4）
+- `/var/lib/changeip-http/`（用于保存状态文件；卸载会删除）
+  - `ip_state.json`：上次已上报 IPv4（基线）
+  - `pending_change.json`：正在进行的换 IP 操作（用于跨重启恢复）
 
 卸载脚本必须完全移除这些改动，并且不删除用户自有的 `/root/changeip.sh` 或仓库目录。
 
@@ -67,4 +73,3 @@
 - 查看日志：`journalctl -u changeip-http -n 200 --no-pager`
 - 健康检查：`curl http://127.0.0.1:8787/`
 - 查看 info：`curl -X POST http://127.0.0.1:8787/info -H 'Content-Type: application/json' -d '{"token":"..."}'`
-

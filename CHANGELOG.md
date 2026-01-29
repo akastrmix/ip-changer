@@ -4,7 +4,19 @@
 
 ## Unreleased
 
-- （暂无）
+（暂无）
+
+## 0.5.0
+
+- 变更（破坏性）：移除旧上报配置 `IP_REPORT_ENDPOINT/IP_REPORT_TOKEN` 与 `/internal/ip-changed`，统一改为事件流上报 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN` → `POST /internal/ip-events`。
+- 新增：自然 IPv4 变化事件 `event=ipv4_changed`（携带 `op_id/ts/old_ipv4/new_ipv4`）。
+- 新增：脚本换 IP 事件 `change_started/change_succeeded/change_no_change/change_failed`，并在 `/changeip` 返回 `op_id` 用于 bot 会话关联。
+- 新增：`pending_change.json` 持久化（跨重启恢复），解决“脚本换 IP 失败但公网 IPv4 未变化导致 bot 会话卡住”。
+- 变更（破坏性）：`REBOOT_DELAY_MINUTES` 仅允许 `-1` 或 `1..15`，禁止 `0`。
+- 重构：代码拆分为 `src/` 模块化（仍然不引入任何第三方依赖）。
+- 修复：换 IP 会话的监测起点会自动考虑 `REBOOT_DELAY_MINUTES`，避免在重启前误判为 `change_no_change`。
+- 修复：当 `REBOOT_DELAY_MINUTES=-1` 且网络仍可用时，`ip-changer` 会等待一次断网/恢复或超时后才上报 `change_no_change`，避免脚本执行中误判。
+- 优化：`REPORT_CHANNEL` 允许留空（仅通知管理员）；自然 IPv4 监测仍会初始化基线并上报事件（channel 为空）。
 
 ## 0.4.0
 

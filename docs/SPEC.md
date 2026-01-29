@@ -9,7 +9,13 @@
 - Node.js 脚本：`changeip_http_server.js`
   - 监听 HTTP 端口（默认 `0.0.0.0:8787`）
   - 可选：提供 `/changeip` 触发换 IP + 重启
-  - 可选：公网 IPv4 监测并上报到 CarpoolNotifier（仅在变化时上报）
+- 可选：公网 IPv4 监测并上报到 CarpoolNotifier（仅在变化时上报）
+
+破坏性更新说明：
+
+- 为解决“脚本换 IP 失败但公网 IPv4 未变化导致 bot 会话卡住”，本项目已升级为 **事件流** 上报（不做向下兼容）。
+- 唯一上报入口：`POST /internal/ip-events`。
+- 事件包含 `op_id` + `event`（started/succeeded/no_change/failed…），用于让 CarpoolNotifier 收敛频道消息与锁定期。
 
 非目标：
 
@@ -40,17 +46,46 @@ HTTP 服务：
 
 - `CHANGEIP_ENABLED`：`1/0`（默认建议 `0`）
 - `CHANGEIP_SCRIPT`：脚本绝对路径（默认 `/root/changeip.sh`）
-- `REBOOT_DELAY_MINUTES`：脚本触发后，几分钟后重启（默认 `16`；设置为 `-1` 表示不重启；否则范围 `1-10080`）
+- `REBOOT_DELAY_MINUTES`：脚本触发后，几分钟后重启（设置为 `-1` 表示不重启；否则仅允许 `1..15`，禁止 `0`）
 
 IPv4 监测与上报（可选）：
 
 - `IP_MONITOR_ENABLED`：`1/0`
 - `IP_MONITOR_INTERVAL_SECONDS`：检测间隔（默认 `60`，最小 `10`）
 - `IP_STATE_FILE`：状态文件（默认 `/var/lib/changeip-http/ip_state.json`）
-- `IP_REPORT_ENDPOINT`：上报地址（例如 `https://<worker>/internal/ip-changed`）
-- `IP_REPORT_TOKEN`：上报鉴权密钥（Bearer token）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
-- `REPORT_CHANNEL`：播报目标（`@channel` 或私有频道 `-100...` chat_id）
+- `REPORT_CHANNEL`：播报目标（`@channel` 或私有频道 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员）
+
+事件流上报（破坏性更新：唯一上报入口）：
+
+- `IP_EVENTS_ENABLED`：`1/0`
+- `IP_EVENTS_ENDPOINT`：例如 `https://<worker>/internal/ip-events`
+- `IP_EVENTS_TOKEN`：Bearer token（与 Worker secret `IP_EVENTS_TOKEN` 一致）
+- `CHANGE_MONITOR_START_DELAY_SECONDS`：触发脚本后延迟多久开始监测（默认 `30`；若设置了重启延迟，则会在“预计重启时间”之后再加上该延迟）
+- `CHANGE_MONITOR_INTERVAL_SECONDS`：监测间隔（默认 `10`；仅在“换 IP 会话进行中”使用）
+- `CHANGE_MONITOR_TIMEOUT_SECONDS`：监测超时（默认 `600` / 10 分钟）
+
+关于 interval（避免“重复监测”误解）：
+
+- 日常“自然变化”监测使用 `IP_MONITOR_INTERVAL_SECONDS`（默认 60s）。
+- “换 IP 会话”需要更快收敛（默认 10s），因此提供 `CHANGE_MONITOR_INTERVAL_SECONDS`。
+- 实现上不要求同时跑两套定时器：可以只跑一个循环；当存在换 IP 会话时临时提速到更快的间隔，从而避免重复请求。
+
+判定规则（v1）：
+
+- 开始监测后，获取到合法公网 IPv4 后即可判定终态：
+  - 若 `ip1 != old_ipv4`：`change_succeeded`
+  - 若 `ip1 == old_ipv4`：
+    - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
+    - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免“脚本执行中但网络仍可用”的误判，会等待一次“断网→恢复”或超时后再判定为 `change_no_change`
+- 超时仍无法获取公网 IPv4：`change_failed`（`no_ipv4_observed`）
+
+重启延迟规则：
+
+- `REBOOT_DELAY_MINUTES=-1`：不重启（允许）
+- `REBOOT_DELAY_MINUTES=1..15`：允许
+- `REBOOT_DELAY_MINUTES=0`：禁止（避免“立刻重启”导致流程不确定）
+- 其它：禁止
 
 ## 4. HTTP 接口
 
@@ -66,7 +101,7 @@ IPv4 监测与上报（可选）：
   - `server_label`
   - `channel`
   - `changeip_enabled`
-  - `ip_monitor_enabled`：只有监测真正“可用”时为 true（即 `IP_MONITOR_ENABLED=1` 且 endpoint/token 都存在）
+  - `ip_monitor_enabled`：只有监测真正“可用”时为 true（即 `IP_MONITOR_ENABLED=1` 且 `IP_EVENTS_*` 配置齐全）
   - `notified_ipv4`：状态文件中的 `notified_ipv4`（可能为 `null`）
 
 ### 4.3 `POST /changeip`（可选）
@@ -78,6 +113,7 @@ IPv4 监测与上报（可选）：
 启用时：
 
 - 鉴权：Body 必须包含 `{ "token": "<AUTH_TOKEN>" }`，否则 `403`
+- 若未启用事件流上报（`IP_EVENTS_ENABLED=1` 且配置齐全），则会返回 `500`：`ip events not configured`
 - 失败：
   - 脚本不存在：`500` `changeip script not found`
   - 脚本不可读：`500` `changeip script not readable`
@@ -88,6 +124,7 @@ IPv4 监测与上报（可选）：
     - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
     - 否则安排重启：`shutdown -r +<REBOOT_DELAY_MINUTES>`
   - 返回 `200`，包含：
+    - `op_id`（用于 bot 会话关联）
     - `message`
     - `server_label`
     - `channel`
@@ -106,7 +143,7 @@ IPv4 监测与上报（可选）：
 
 - **首次运行**：只初始化基线（写入 `notified_ipv4`），不进行上报
 - 后续运行：当检测到当前 IPv4 `!= notified_ipv4` 时：
-  - 发送上报到 `IP_REPORT_ENDPOINT`
+  - 发送事件上报到 `IP_EVENTS_ENDPOINT`（`event=ipv4_changed`）
   - 上报成功才会更新 `notified_ipv4`
   - 上报失败会保留旧的 `notified_ipv4`，从而在下一次检测仍会继续尝试上报（直到成功）
 
@@ -114,7 +151,7 @@ IPv4 监测与上报（可选）：
 
 Header：
 
-- `Authorization: Bearer <IP_REPORT_TOKEN>`
+- `Authorization: Bearer <IP_EVENTS_TOKEN>`
 
 JSON Body：
 
@@ -122,9 +159,11 @@ JSON Body：
 {
   "server_label": "HKT",
   "channel": "-1001234567890",
+  "op_id": "20260128T061500Z_hkt_ipv4_7f2c0f",
+  "ts": "2025-12-17T08:00:00.000Z",
+  "event": "ipv4_changed",
   "old_ipv4": "1.2.3.4",
-  "new_ipv4": "5.6.7.8",
-  "detected_at": "2025-12-17T08:00:00.000Z"
+  "new_ipv4": "5.6.7.8"
 }
 ```
 

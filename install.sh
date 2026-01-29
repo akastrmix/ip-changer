@@ -86,7 +86,7 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
     echo "你仍然可以继续安装，但 /changeip 将在脚本存在之前返回 500。"
   fi
 
-  REBOOT_DELAY_MINUTES="$(prompt_int_or_neg1 "重启延迟（分钟，-1 表示不重启）" "16" "1" "10080")"
+  REBOOT_DELAY_MINUTES="$(prompt_int_or_neg1 "重启延迟（分钟，-1 表示不重启）" "1" "1" "15")"
 fi
 
 read -rp "共享密钥 AUTH_TOKEN（留空则自动生成）: " AUTH_TOKEN
@@ -103,7 +103,41 @@ DEFAULT_LABEL="$(hostname 2>/dev/null || echo "SERVER")"
 read -rp "服务器标识（用于多服务器区分）[默认 $DEFAULT_LABEL]: " SERVER_LABEL
 SERVER_LABEL="${SERVER_LABEL:-$DEFAULT_LABEL}"
 
-read -rp "播报频道 @用户名（例如 @my_channel，可留空）: " REPORT_CHANNEL
+read -rp "播报目标（@channel 或 -100... chat_id，可留空）: " REPORT_CHANNEL
+
+read -rp "是否启用事件流上报到 CarpoolNotifier（/internal/ip-events）? [Y/n]: " IP_EVENTS_ENABLED_INPUT
+IP_EVENTS_ENABLED_INPUT="${IP_EVENTS_ENABLED_INPUT:-Y}"
+IP_EVENTS_ENABLED=1
+case "$(echo "$IP_EVENTS_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
+  n|no|0) IP_EVENTS_ENABLED=0 ;;
+esac
+
+IP_EVENTS_ENDPOINT=""
+IP_EVENTS_TOKEN=""
+if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
+  while [ -z "$IP_EVENTS_ENDPOINT" ]; do
+    read -rp "CarpoolNotifier 事件流上报地址（例如 https://<worker>/internal/ip-events）: " IP_EVENTS_ENDPOINT
+    IP_EVENTS_ENDPOINT="${IP_EVENTS_ENDPOINT:-}"
+    if [ -z "$IP_EVENTS_ENDPOINT" ]; then
+      echo "上报地址不能为空。若暂时不需要对接 CarpoolNotifier，请选择关闭事件流上报。"
+    fi
+  done
+
+  read -rp "上报密钥 IP_EVENTS_TOKEN（留空则自动生成）: " IP_EVENTS_TOKEN
+  if [ -z "$IP_EVENTS_TOKEN" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+      IP_EVENTS_TOKEN="$(openssl rand -base64 32 | tr -d '=+/')"
+    else
+      IP_EVENTS_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/')"
+    fi
+    echo "已自动生成 IP_EVENTS_TOKEN：$IP_EVENTS_TOKEN"
+  fi
+fi
+
+if [ "$CHANGEIP_ENABLED" -eq 1 ] && [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
+  echo "错误：/changeip 需要事件流上报（IP_EVENTS_ENABLED=1），否则机器人无法可靠收敛会话。"
+  exit 1
+fi
 
 read -rp "是否启用公网 IPv4 变化监测并上报到 CarpoolNotifier? [Y/n]: " IP_MONITOR_ENABLED_INPUT
 IP_MONITOR_ENABLED_INPUT="${IP_MONITOR_ENABLED_INPUT:-Y}"
@@ -112,30 +146,14 @@ case "$(echo "$IP_MONITOR_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
   n|no|0) IP_MONITOR_ENABLED=0 ;;
 esac
 
-IP_REPORT_ENDPOINT=""
-IP_REPORT_TOKEN=""
+if [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
+  IP_MONITOR_ENABLED=0
+fi
+
 IP_MONITOR_INTERVAL_SECONDS=""
 IP_STATE_FILE="/var/lib/changeip-http/ip_state.json"
 
 if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
-  while [ -z "$IP_REPORT_ENDPOINT" ]; do
-    read -rp "CarpoolNotifier 上报地址（例如 https://<worker>/internal/ip-changed）: " IP_REPORT_ENDPOINT
-    IP_REPORT_ENDPOINT="${IP_REPORT_ENDPOINT:-}"
-    if [ -z "$IP_REPORT_ENDPOINT" ]; then
-      echo "上报地址不能为空。若暂时不需要上报，请在上一步选择关闭监测。"
-    fi
-  done
-
-  read -rp "上报密钥 IP_REPORT_TOKEN（留空则自动生成）: " IP_REPORT_TOKEN
-  if [ -z "$IP_REPORT_TOKEN" ]; then
-    if command -v openssl >/dev/null 2>&1; then
-      IP_REPORT_TOKEN="$(openssl rand -base64 32 | tr -d '=+/')"
-    else
-      IP_REPORT_TOKEN="$(head -c 32 /dev/urandom | base64 | tr -d '=+/')"
-    fi
-    echo "已自动生成 IP_REPORT_TOKEN：$IP_REPORT_TOKEN"
-  fi
-
   IP_MONITOR_INTERVAL_SECONDS="$(prompt_int "监测间隔（秒）" "60" "10" "86400")"
 fi
 
@@ -159,6 +177,14 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   } >>"$ENV_FILE"
 fi
 
+if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
+  {
+    printf 'IP_EVENTS_ENABLED=%s\n' "$(env_quote "1")"
+    printf 'IP_EVENTS_ENDPOINT=%s\n' "$(env_quote "$IP_EVENTS_ENDPOINT")"
+    printf 'IP_EVENTS_TOKEN=%s\n' "$(env_quote "$IP_EVENTS_TOKEN")"
+  } >>"$ENV_FILE"
+fi
+
 if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
   mkdir -p "$(dirname "$IP_STATE_FILE")"
   chmod 700 "$(dirname "$IP_STATE_FILE")" || true
@@ -166,8 +192,6 @@ if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
     printf 'IP_MONITOR_ENABLED=%s\n' "$(env_quote "1")"
     printf 'IP_MONITOR_INTERVAL_SECONDS=%s\n' "$(env_quote "$IP_MONITOR_INTERVAL_SECONDS")"
     printf 'IP_STATE_FILE=%s\n' "$(env_quote "$IP_STATE_FILE")"
-    printf 'IP_REPORT_ENDPOINT=%s\n' "$(env_quote "$IP_REPORT_ENDPOINT")"
-    printf 'IP_REPORT_TOKEN=%s\n' "$(env_quote "$IP_REPORT_TOKEN")"
   } >>"$ENV_FILE"
 fi
 
@@ -213,23 +237,34 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
 else
   echo "未启用 /changeip"
 fi
-if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
-  echo "已启用 IPv4 监测上报"
+if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
+  echo "已启用 ip-events 上报"
   echo "SERVER_LABEL: $SERVER_LABEL"
   echo "REPORT_CHANNEL: $REPORT_CHANNEL"
-  echo "IP_REPORT_ENDPOINT: $IP_REPORT_ENDPOINT"
-  echo "IP_REPORT_TOKEN: $IP_REPORT_TOKEN"
+  echo "IP_EVENTS_ENDPOINT: $IP_EVENTS_ENDPOINT"
+  echo "IP_EVENTS_TOKEN: $IP_EVENTS_TOKEN"
+  if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
+    echo "已启用 IPv4 变化监测（仅在变化时上报）"
+    echo "IP_MONITOR_INTERVAL_SECONDS: $IP_MONITOR_INTERVAL_SECONDS"
+  else
+    echo "未启用 IPv4 变化监测"
+  fi
 else
-  echo "未启用 IPv4 监测上报"
+  echo "未启用 ip-events 上报"
 fi
 echo
 if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
-  echo "请在 Telegram 机器人所在环境中配置："
-  echo "  CHANGEIP_ENDPOINT=http://<VPS_IP>:$PORT/changeip"
-  echo "  CHANGEIP_TOKEN=$AUTH_TOKEN"
+  echo "请在 CarpoolNotifier（Cloudflare Worker）中为该服务器配置："
+  echo "  - 在 wrangler.toml 的 vars 里，把此服务器加入 CHANGEIP_ENDPOINTS_JSON："
+  echo "      {\"$SERVER_LABEL\":\"http://<VPS_IP>:$PORT/changeip\", ...}"
+  echo "  - 把此服务器加入 CHANGEIP_SERVERS（并标记为 script）："
+  echo "      $SERVER_LABEL:script"
+  echo "  - 使用 secret 配置 CHANGEIP_TOKENS_JSON（JSON 需包含所有服务器的条目）："
+  echo "      wrangler secret put CHANGEIP_TOKENS_JSON"
+  echo "    并填入：{\"$SERVER_LABEL\":\"$AUTH_TOKEN\", ...}"
 fi
-if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
+if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
   echo "请在 CarpoolNotifier（Cloudflare Worker）中配置密钥："
-  echo "  wrangler secret put IP_REPORT_TOKEN"
-  echo "并填入上面的 IP_REPORT_TOKEN"
+  echo "  wrangler secret put IP_EVENTS_TOKEN"
+  echo "并填入上面的 IP_EVENTS_TOKEN"
 fi
