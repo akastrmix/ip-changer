@@ -4,7 +4,22 @@
 
 ## Unreleased
 
-（暂无）
+- 修复：`/changeip` 先持久化 `pending_change` 再进入异步流程，消除“基线未初始化时并发触发多次脚本”的竞态窗口。
+- 修复：`change_started` 上报改为按 `op_id` 回读并更新 pending，避免 spawn 失败后旧异步回调把 pending 写回（状态复活）。
+- 新增：`/changeip` provider 架构（`CHANGEIP_PROVIDER=script|exec|http_flow`），并拆分到 `src/providers/` 模块。
+- 新增：`exec` provider（执行任意本地命令）与统一 provider 调度入口。
+- 变更（破坏性）：当 `CHANGEIP_ENABLED=1` 时必须显式配置 `CHANGEIP_PROVIDER`（不再隐式默认脚本 provider）。
+- 强化：`CHANGEIP_SCRIPT` 校验增加“必须绝对路径 + 必须常规文件”。
+- 强化：新增脚本早退检测（启动后短时间内非 0/信号退出直接判失败），`/changeip` 返回 `500 changeip script exited early` 并上报 `change_failed`。
+- 新增：`scripts/changeip_regression.js` 零依赖回归脚本，覆盖 `/changeip` 并发与关键失败路径（含 `exec` provider 并发用例）。
+- 新增：`http_flow` provider 可用（flow JSON 执行器，支持 cookie、重定向、变量模板、提取与断言步骤）。
+- 新增：示例 flow 文件 `flows/ippanel.boil.network.sample.json`。
+- 新增：回归脚本 `http_flow` 用例，覆盖“登录 + 重定向 + 触发动作”链路。
+- 重构：抽离 `src/changeSession.js`，统一 `pending_change` 会话状态迁移与 `change_*` 事件构造/发送逻辑。
+- 重构：统一 provider 错误模型（稳定 `provider_error_code`），降低上层分支判断复杂度。
+- 重构：回归测试拆分为 `scripts/changeip_regression/harness.js` + `scripts/changeip_regression/cases.js`，便于后续按 provider 扩展用例。
+- 重构：`http_flow` provider 拆分为编译/模板/http/cookie/运行时模块，降低单文件复杂度。
+- 强化：`http_flow` 增加编译期校验与预编译（步骤结构、变量依赖、状态码与正则格式），不合法 flow 在执行前即失败。
 
 ## 0.5.0
 

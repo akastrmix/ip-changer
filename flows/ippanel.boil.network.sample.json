@@ -1,0 +1,60 @@
+{
+  "base_url": "https://ippanel.boil.network",
+  "timeout_ms": 10000,
+  "max_redirects": 5,
+  "user_agent": "ip-changer-http-flow/1.0",
+  "vars": {
+    "username": "${ENV:BOIL_USERNAME}",
+    "password": "${ENV:BOIL_PASSWORD}"
+  },
+  "steps": [
+    {
+      "type": "request",
+      "name": "open_login_page",
+      "method": "GET",
+      "url": "/login",
+      "expect_status": 200
+    },
+    {
+      "type": "extract",
+      "name": "extract_csrf",
+      "from": "body",
+      "regex": "name=\"_token\"\\s+value=\"([^\"]+)\"",
+      "to": "csrf"
+    },
+    {
+      "type": "request",
+      "name": "submit_login_form",
+      "method": "POST",
+      "url": "/login",
+      "form": {
+        "username": "${username}",
+        "password": "${password}",
+        "_token": "${csrf}"
+      },
+      "expect_status": [
+        200,
+        302
+      ]
+    },
+    {
+      "type": "request",
+      "name": "trigger_change_ip",
+      "method": "POST",
+      "url": "/api/change-ip",
+      "form": {
+        "action": "change"
+      },
+      "expect_status": [
+        200,
+        202
+      ]
+    },
+    {
+      "type": "assert",
+      "name": "change_ip_ack",
+      "from": "body",
+      "includes": "ok"
+    }
+  ]
+}

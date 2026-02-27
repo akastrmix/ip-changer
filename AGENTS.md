@@ -19,6 +19,10 @@
   - 每台 VPS 独立配置 `SERVER_LABEL` 与 `REPORT_CHANNEL`，CarpoolNotifier 以 `server_label` 区分服务器。
 - **README 清晰化**
   - README 必须拥有完整和清晰的项目介绍以及使用方法以让运维人员理解此项目并了解它对服务器的影响，任何功能上的更改都必须同步到 README 以确保内容为最新。
+- **不必强兼容**
+  - 当“强行兼容”会导致实现臃肿、复杂度上升或风险更高时，可以直接采用更好的新架构/重构方案。优先可维护性与长期稳定性，避免为了兼容而“修修补补”堆出隐性分支与不确定性。
+- **模块化设计**
+  - 每个功能部分尽量独立以保证局部改动不会影响全局稳定性。同时，当某个模块包含的内容过大功能过多的时候有必要拆分为更小的模块组合以提升可维护性。
 
 ## 仓库文件地图
 
@@ -26,6 +30,7 @@
   - 常驻 HTTP 服务（/ /info /changeip）+ IPv4 变化监测 + 事件流上报。
 - `src/`
   - 纯 Node 标准库模块（配置解析/状态文件/IPv4 获取/事件上报/监测循环等），便于维护但不引入依赖。
+  - `src/providers/`：`/changeip` provider 模块（`script` / `exec` / `http_flow`）与统一入口。
 - `install.sh`
   - 写入 `/etc/default/changeip-http`，创建 `/etc/systemd/system/changeip-http.service`，启用服务。
 - `uninstall.sh`
@@ -42,8 +47,8 @@
 `ip-changer` 对外暴露：
 
 - `GET /`：健康检查
-- `POST /info`：读取 `server_label` / `channel` / `notified_ipv4` 等信息（鉴权：JSON `{ token }`）
-- `POST /changeip`：可选启用；触发脚本 + 安排重启（鉴权：JSON `{ token }`）
+- `POST /info`：读取 `server_label` / `channel` / `changeip_provider` / `notified_ipv4` 等信息（鉴权：JSON `{ token }`）
+- `POST /changeip`：可选启用；触发 provider（按 `REBOOT_DELAY_MINUTES` 可选安排重启，`-1` 表示不重启）（鉴权：JSON `{ token }`）
 
 `ip-changer` 上报到 CarpoolNotifier：
 
@@ -73,3 +78,19 @@
 - 查看日志：`journalctl -u changeip-http -n 200 --no-pager`
 - 健康检查：`curl http://127.0.0.1:8787/`
 - 查看 info：`curl -X POST http://127.0.0.1:8787/info -H 'Content-Type: application/json' -d '{"token":"..."}'`
+
+## 回归脚本强制规则（AI 必须执行）
+
+- 回归脚本：`node scripts/changeip_regression.js`
+- 触发条件（满足任一即必须运行）：
+  - 修改 `changeip_http_server.js`
+  - 修改 `src/*.js`
+  - 修改 `scripts/changeip_regression.js`
+  - 修改 `install.sh` / `uninstall.sh` 且可能影响 `/changeip` 相关行为
+- 交付前要求：
+  - 回归脚本必须通过；失败时不得直接交付，必须继续修复直到通过。
+  - 最终回复必须包含“已运行回归脚本”与结果摘要（通过/失败、关键 case）。
+- 覆盖面维护（自动扩展）：
+  - 若本次改动改变了 `/changeip`、并发控制、状态文件（`pending_change.json` / `ip_state.json`）、事件上报、脚本校验或错误码语义，必须同步更新 `scripts/changeip_regression.js`。
+  - 每次此类行为变更，至少新增或强化 1 个对应测试 case（不能只改实现不改测试）。
+  - 若当前环境确实无法运行脚本，需在最终回复明确说明阻塞原因、已尝试命令及建议补跑命令。

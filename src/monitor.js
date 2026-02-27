@@ -1,80 +1,35 @@
 const { fetchPublicIpv4, isValidIpv4 } = require('./ipv4');
-const { loadIpState, saveIpState, loadPendingChange, savePendingChange, clearPendingChange } = require('./state');
+const { loadIpState, saveIpState } = require('./state');
 const { makeIpv4OpId } = require('./opId');
 const { postIpEvent } = require('./events');
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function buildTerminalEvent({ opId, serverLabel, channel, oldIpv4, newIpv4, event, reason }) {
-  const payload = {
-    server_label: serverLabel,
-    channel,
-    op_id: opId,
-    ts: nowIso(),
-    event
-  };
-  if (isValidIpv4(oldIpv4)) payload.old_ipv4 = oldIpv4;
-  if (isValidIpv4(newIpv4)) payload.new_ipv4 = newIpv4;
-  if (reason) payload.reason = reason;
-  return payload;
-}
+const {
+  buildChangeTerminalPayload,
+  clearChangeSession,
+  loadChangeSession,
+  nowIso,
+  resolvePendingSessionContext,
+  sendChangeStartedEvent,
+  setChangeSessionLastError,
+  updateChangeSessionIfCurrent
+} = require('./changeSession');
 
 async function handlePendingChange(config) {
-  const pending = loadPendingChange(config);
+  const pending = loadChangeSession(config);
   if (!pending?.op_id) return { handled: false };
 
-  const opId = String(pending.op_id || '').trim();
-  const serverLabel = String(pending.server_label || '').trim() || config.serverLabel;
-  const channel = String(pending.channel || '').trim() || config.reportChannel;
-
-  const startedAt = String(pending.started_at || '').trim();
-  const startedAtMs = startedAt ? Date.parse(startedAt) : NaN;
-  const rebootDelayMinutes =
-    pending.reboot_delay_minutes === -1 || pending.reboot_delay_minutes >= 1
-      ? pending.reboot_delay_minutes
-      : config.rebootDelayMinutes;
-
-  let monitorAfterMs = Number(pending.monitor_after_ms || 0);
-  let timeoutAtMs = Number(pending.timeout_at_ms || 0);
-  if (Number.isFinite(startedAtMs)) {
-    if (rebootDelayMinutes !== -1) {
-      const rebootDelayMs = Math.max(Number(rebootDelayMinutes) || 1, 1) * 60 * 1000;
-      const minMonitorAfterMs = startedAtMs + rebootDelayMs + config.changeMonitorStartDelaySeconds * 1000;
-      if (!monitorAfterMs || monitorAfterMs < minMonitorAfterMs) {
-        monitorAfterMs = minMonitorAfterMs;
-        pending.monitor_after_ms = monitorAfterMs;
-        pending.timeout_at_ms = monitorAfterMs + config.changeMonitorTimeoutSeconds * 1000;
-        timeoutAtMs = Number(pending.timeout_at_ms || 0);
-        savePendingChange(config, pending);
-      }
-    }
-  }
+  const session = resolvePendingSessionContext(config, pending);
+  const {
+    opId,
+    serverLabel,
+    channel,
+    startedAt,
+    rebootDelayMinutes,
+    monitorAfterMs,
+    timeoutAtMs
+  } = session;
 
   if (!pending.started_sent && startedAt) {
-    const startedPayload = {
-      server_label: serverLabel,
-      channel,
-      op_id: opId,
-      ts: startedAt,
-      event: 'change_started',
-      ...(isValidIpv4(pending.old_ipv4) ? { old_ipv4: pending.old_ipv4 } : {})
-    };
-    try {
-      const r = await postIpEvent(config, startedPayload);
-      if (r.ok) {
-        pending.started_sent = true;
-        pending.last_error = '';
-        savePendingChange(config, pending);
-      } else {
-        pending.last_error = r.error || pending.last_error || '';
-        savePendingChange(config, pending);
-      }
-    } catch (err) {
-      pending.last_error = String(err);
-      savePendingChange(config, pending);
-    }
+    await sendChangeStartedEvent(config, opId);
   }
 
   const nowMs = Date.now();
@@ -85,11 +40,12 @@ async function handlePendingChange(config) {
     ip = await fetchPublicIpv4({ userAgent: 'ip-changer' });
   } catch (err) {
     if (rebootDelayMinutes === -1 && !pending.offline_observed) {
-      pending.offline_observed = true;
-      savePendingChange(config, pending);
+      updateChangeSessionIfCurrent(config, opId, (next) => {
+        next.offline_observed = true;
+      });
     }
     if (timeoutAtMs && nowMs >= timeoutAtMs) {
-      const payload = buildTerminalEvent({
+      const payload = buildChangeTerminalPayload({
         opId,
         serverLabel,
         channel,
@@ -100,14 +56,12 @@ async function handlePendingChange(config) {
       try {
         const r = await postIpEvent(config, payload);
         if (r.ok) {
-          clearPendingChange(config);
+          clearChangeSession(config);
           return { handled: true, done: true };
         }
-        pending.last_error = r.error || pending.last_error || '';
-        savePendingChange(config, pending);
+        setChangeSessionLastError(config, opId, r.error);
       } catch (postErr) {
-        pending.last_error = String(postErr);
-        savePendingChange(config, pending);
+        setChangeSessionLastError(config, opId, String(postErr));
       }
     }
     return { handled: true };
@@ -116,7 +70,7 @@ async function handlePendingChange(config) {
   const oldIpv4 = isValidIpv4(pending.old_ipv4) ? pending.old_ipv4 : null;
   let terminal;
   if (!oldIpv4) {
-    terminal = buildTerminalEvent({
+    terminal = buildChangeTerminalPayload({
       opId,
       serverLabel,
       channel,
@@ -127,7 +81,7 @@ async function handlePendingChange(config) {
   } else if (ip === oldIpv4) {
     if (rebootDelayMinutes === -1 && !pending.offline_observed) {
       if (timeoutAtMs && nowMs >= timeoutAtMs) {
-        terminal = buildTerminalEvent({
+        terminal = buildChangeTerminalPayload({
           opId,
           serverLabel,
           channel,
@@ -138,7 +92,7 @@ async function handlePendingChange(config) {
         return { handled: true };
       }
     } else {
-      terminal = buildTerminalEvent({
+      terminal = buildChangeTerminalPayload({
         opId,
         serverLabel,
         channel,
@@ -147,7 +101,7 @@ async function handlePendingChange(config) {
       });
     }
   } else {
-    terminal = buildTerminalEvent({
+    terminal = buildChangeTerminalPayload({
       opId,
       serverLabel,
       channel,
@@ -160,13 +114,11 @@ async function handlePendingChange(config) {
   try {
     const r = await postIpEvent(config, terminal);
     if (!r.ok) {
-      pending.last_error = r.error || pending.last_error || '';
-      savePendingChange(config, pending);
+      setChangeSessionLastError(config, opId, r.error);
       return { handled: true };
     }
   } catch (err) {
-    pending.last_error = String(err);
-    savePendingChange(config, pending);
+    setChangeSessionLastError(config, opId, String(err));
     return { handled: true };
   }
 
@@ -180,7 +132,7 @@ async function handlePendingChange(config) {
   }
   saveIpState(config, ipState);
 
-  clearPendingChange(config);
+  clearChangeSession(config);
   return { handled: true, done: true };
 }
 
@@ -249,7 +201,7 @@ async function handleNaturalMonitor(config, lastNaturalRunMsRef) {
 function startMonitor(config) {
   if (!config.ipEventsActive) return;
   if (!config.ipMonitorEnabled && !config.changeipEnabled) {
-    const pending = loadPendingChange(config);
+    const pending = loadChangeSession(config);
     if (!pending?.op_id) return;
   }
   const baseIntervalSeconds = Math.max(Math.min(config.changeMonitorIntervalSeconds, config.ipMonitorIntervalSeconds), 1);

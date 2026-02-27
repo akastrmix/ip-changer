@@ -75,16 +75,54 @@ case "$(echo "$CHANGEIP_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
   y|yes|1) CHANGEIP_ENABLED=1 ;;
 esac
 
+CHANGEIP_PROVIDER=""
 CHANGEIP_SCRIPT=""
+CHANGEIP_EXEC_COMMAND=""
+CHANGEIP_HTTP_FLOW_FILE=""
 REBOOT_DELAY_MINUTES=""
 if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
-  read -rp "changeip.sh 脚本绝对路径 [默认 /root/changeip.sh]: " CHANGEIP_SCRIPT
-  CHANGEIP_SCRIPT="${CHANGEIP_SCRIPT:-/root/changeip.sh}"
+  while true; do
+    read -rp "请选择 /changeip provider（script/exec/http_flow）: " CHANGEIP_PROVIDER
+    CHANGEIP_PROVIDER="$(echo "${CHANGEIP_PROVIDER:-}" | tr '[:upper:]' '[:lower:]')"
+    case "$CHANGEIP_PROVIDER" in
+      script|exec|http_flow) break ;;
+      *) echo "输入无效，请输入 script / exec / http_flow。" ;;
+    esac
+  done
 
-  if [ ! -f "$CHANGEIP_SCRIPT" ]; then
-    echo "警告：未找到脚本文件：$CHANGEIP_SCRIPT"
-    echo "你仍然可以继续安装，但 /changeip 将在脚本存在之前返回 500。"
-  fi
+  case "$CHANGEIP_PROVIDER" in
+    script)
+      read -rp "changeip.sh 脚本绝对路径 [默认 /root/changeip.sh]: " CHANGEIP_SCRIPT
+      CHANGEIP_SCRIPT="${CHANGEIP_SCRIPT:-/root/changeip.sh}"
+
+      if [ ! -f "$CHANGEIP_SCRIPT" ]; then
+        echo "警告：未找到脚本文件：$CHANGEIP_SCRIPT"
+        echo "你仍然可以继续安装，但 /changeip 将在脚本存在之前返回 500。"
+      fi
+      ;;
+    exec)
+      while [ -z "$CHANGEIP_EXEC_COMMAND" ]; do
+        read -rp "请输入 exec 命令（例如 python3 /root/xxx.py）: " CHANGEIP_EXEC_COMMAND
+        CHANGEIP_EXEC_COMMAND="${CHANGEIP_EXEC_COMMAND:-}"
+        if [ -z "$CHANGEIP_EXEC_COMMAND" ]; then
+          echo "exec 命令不能为空。"
+        fi
+      done
+      ;;
+    http_flow)
+      while [ -z "$CHANGEIP_HTTP_FLOW_FILE" ]; do
+        read -rp "请输入 http_flow JSON 文件绝对路径: " CHANGEIP_HTTP_FLOW_FILE
+        CHANGEIP_HTTP_FLOW_FILE="${CHANGEIP_HTTP_FLOW_FILE:-}"
+        if [ -z "$CHANGEIP_HTTP_FLOW_FILE" ]; then
+          echo "http_flow 文件路径不能为空。"
+        fi
+      done
+      if [ ! -f "$CHANGEIP_HTTP_FLOW_FILE" ]; then
+        echo "警告：未找到 http_flow 文件：$CHANGEIP_HTTP_FLOW_FILE"
+        echo "你仍然可以继续安装，但 /changeip 会在文件存在且内容合法前返回 500。"
+      fi
+      ;;
+  esac
 
   REBOOT_DELAY_MINUTES="$(prompt_int_or_neg1 "重启延迟（分钟，-1 表示不重启）" "1" "1" "15")"
 fi
@@ -172,9 +210,21 @@ echo "写入配置到 $ENV_FILE ..."
 
 if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   {
-    printf 'CHANGEIP_SCRIPT=%s\n' "$(env_quote "$CHANGEIP_SCRIPT")"
+    printf 'CHANGEIP_PROVIDER=%s\n' "$(env_quote "$CHANGEIP_PROVIDER")"
     printf 'REBOOT_DELAY_MINUTES=%s\n' "$(env_quote "$REBOOT_DELAY_MINUTES")"
   } >>"$ENV_FILE"
+
+  case "$CHANGEIP_PROVIDER" in
+    script)
+      printf 'CHANGEIP_SCRIPT=%s\n' "$(env_quote "$CHANGEIP_SCRIPT")" >>"$ENV_FILE"
+      ;;
+    exec)
+      printf 'CHANGEIP_EXEC_COMMAND=%s\n' "$(env_quote "$CHANGEIP_EXEC_COMMAND")" >>"$ENV_FILE"
+      ;;
+    http_flow)
+      printf 'CHANGEIP_HTTP_FLOW_FILE=%s\n' "$(env_quote "$CHANGEIP_HTTP_FLOW_FILE")" >>"$ENV_FILE"
+      ;;
+  esac
 fi
 
 if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
@@ -200,7 +250,7 @@ chmod 600 "$ENV_FILE" || true
 echo "创建 systemd 服务到 $SERVICE_FILE ..."
 cat >"$SERVICE_FILE" <<EOF
 [Unit]
-Description=HTTP trigger for changeip.sh
+Description=HTTP trigger for changeip providers
 After=network.target
 
 [Service]
@@ -228,7 +278,18 @@ echo "监听端口: $PORT"
 echo "AUTH_TOKEN: $AUTH_TOKEN"
 if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   echo "已启用 /changeip"
-  echo "changeip.sh 路径: $CHANGEIP_SCRIPT"
+  echo "CHANGEIP_PROVIDER: $CHANGEIP_PROVIDER"
+  case "$CHANGEIP_PROVIDER" in
+    script)
+      echo "changeip.sh 路径: $CHANGEIP_SCRIPT"
+      ;;
+    exec)
+      echo "exec 命令: 已配置（出于安全考虑不在此回显）"
+      ;;
+    http_flow)
+      echo "http_flow 文件: $CHANGEIP_HTTP_FLOW_FILE"
+      ;;
+  esac
   if [ "$REBOOT_DELAY_MINUTES" = "-1" ]; then
     echo "重启: 已禁用（REBOOT_DELAY_MINUTES=-1）"
   else
@@ -257,8 +318,8 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   echo "请在 CarpoolNotifier（Cloudflare Worker）中为该服务器配置："
   echo "  - 在 wrangler.toml 的 vars 里，把此服务器加入 CHANGEIP_ENDPOINTS_JSON："
   echo "      {\"$SERVER_LABEL\":\"http://<VPS_IP>:$PORT/changeip\", ...}"
-  echo "  - 把此服务器加入 CHANGEIP_SERVERS（并标记为 script）："
-  echo "      $SERVER_LABEL:script"
+  echo "  - 把此服务器加入 CHANGEIP_SERVERS（并标记为 provider）："
+  echo "      $SERVER_LABEL:$CHANGEIP_PROVIDER"
   echo "  - 使用 secret 配置 CHANGEIP_TOKENS_JSON（JSON 需包含所有服务器的条目）："
   echo "      wrangler secret put CHANGEIP_TOKENS_JSON"
   echo "    并填入：{\"$SERVER_LABEL\":\"$AUTH_TOKEN\", ...}"

@@ -10,10 +10,13 @@
 - 开启 IPv4 监测上报
 - 可选：关闭入站端口（只做出站上报即可）
 
-### B. 监测上报 + 一键换 IP（用于 CMHK 等支持脚本换 IP 的 VPS）
+### B. 监测上报 + 一键换 IP（支持多种 provider）
 
 - 开启 `/changeip`
-- 配置 `CHANGEIP_SCRIPT` 与 `REBOOT_DELAY_MINUTES`（可设为 `-1` 禁用重启）
+- 配置 `CHANGEIP_PROVIDER` 与对应 provider 参数，再配置 `REBOOT_DELAY_MINUTES`（可设为 `-1` 禁用重启）
+  - `script`：`CHANGEIP_SCRIPT`
+  - `exec`：`CHANGEIP_EXEC_COMMAND`
+  - `http_flow`：`CHANGEIP_HTTP_FLOW_FILE`（可参考 `flows/ippanel.boil.network.sample.json`）
 - 开启 IPv4 监测上报（推荐，用于自动播报与会话编辑）
 
 ## 2. 标准安装（Debian/Ubuntu）
@@ -86,7 +89,7 @@ cd /root/ip-changer
 
 不会删除：
 
-- 你的 `/root/changeip.sh`
+- 你的 provider 相关文件（例如 `/root/changeip.sh`、自定义 flow JSON 等）
 - 你的仓库目录（可手动 `rm -rf /root/ip-changer`）
 
 ## 6. 验证与测试
@@ -114,9 +117,9 @@ curl -X POST http://127.0.0.1:8787/info -H 'Content-Type: application/json' -d '
   - 若上报失败，`last_report_error` 会记录最近一次失败的错误摘要
   - 若一直未能初始化基线，说明公网 IPv4 获取可能失败（可查看日志中的 `monitor error:`）
 
-### 6.4 `/changeip`（会触发真实重启，谨慎）
+### 6.4 `/changeip`（可能触发真实重启，取决于 `REBOOT_DELAY_MINUTES`，谨慎）
 
-如果你只想测试脚本触发但不想重启，可先在 `/etc/default/changeip-http` 设置：
+如果你只想测试 provider 触发但不想重启，可先在 `/etc/default/changeip-http` 设置：
 
 - `REBOOT_DELAY_MINUTES=-1`
 
@@ -156,6 +159,17 @@ journalctl -u changeip-http -n 200 --no-pager
 - token 不匹配（CarpoolNotifier 中该 `SERVER_LABEL` 的 token 与 VPS 的 `AUTH_TOKEN` 必须一致；通常在 `CHANGEIP_TOKENS_JSON` 里配置）
 - 或 `/changeip` 未启用（`CHANGEIP_ENABLED=0`）
 
+### `/changeip` 返回 500
+
+- `CHANGEIP_PROVIDER` 未配置或取值非法（`script` / `exec` / `http_flow`）
+- 可优先查看响应字段 `provider_error_code`：`provider.unsupported` / `provider.config_invalid` / `provider.spawn_failed` / `provider.exited_early` / `provider.runtime_failed`
+- provider=`script` 时：`CHANGEIP_SCRIPT` 路径不合法（必须为绝对路径，且指向可读的常规文件）
+- provider=`script` 时：脚本创建进程失败（`failed to spawn changeip script`）
+- provider=`script` 时：脚本启动后立即异常退出（`changeip script exited early`）
+- provider=`exec` 时：命令为空/创建失败/启动后异常退出
+- provider=`http_flow` 时：flow 文件 JSON 非法、步骤执行失败或模板变量缺失
+- 状态文件无法写入（`failed to persist change session`）
+
 ### Worker 返回 401
 
 - `IP_EVENTS_TOKEN` 不一致（多台 VPS 建议共用同一个 token）
@@ -174,3 +188,15 @@ journalctl -u changeip-http -n 200 --no-pager
    - `IP_EVENTS_ENABLED=1`
    - `IP_EVENTS_ENDPOINT=https://<worker>/internal/ip-events`
    - `IP_EVENTS_TOKEN=<same as worker secret>`
+
+## 10. 回归脚本（开发验证）
+
+在调整 `/changeip` 相关逻辑后，建议运行：
+
+```bash
+cd /root/ip-changer
+node scripts/changeip_regression.js
+```
+
+该脚本不依赖第三方包，会临时启动本地测试服务，验证并发与失败路径（结束后自动清理临时文件）。
+维护方式：基础能力在 `scripts/changeip_regression/harness.js`，具体用例在 `scripts/changeip_regression/cases.js`。

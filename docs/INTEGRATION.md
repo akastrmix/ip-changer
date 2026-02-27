@@ -37,13 +37,13 @@
 
 ### 2.1 `/changeip` 触发（可选）
 
-前提：VPS 上 `CHANGEIP_ENABLED=1`。
+前提：VPS 上 `CHANGEIP_ENABLED=1` 且已配置 `CHANGEIP_PROVIDER`。
 
 CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容）：
 
 - `CHANGEIP_ENDPOINTS_JSON`（vars）：例如 `{"CMHK":"http://<VPS_IP>:8787/changeip"}`
 - `CHANGEIP_TOKENS_JSON`（secret）：例如 `{"CMHK":"<AUTH_TOKEN>"}`（必须等于 VPS 上 `AUTH_TOKEN`）
-- `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记为 `script`（例如 `CMHK:script`）
+- `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记 provider（例如 `CMHK:script` / `CMHK:exec` / `CMHK:http_flow`）
 
 请求：
 
@@ -57,7 +57,7 @@ CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容
 
 说明：
 
-- 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，脚本仍会触发，但**不会**执行重启。
+- 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，provider 触发仍会执行，但**不会**执行重启。
 
 ### 2.2 `/info` 查询
 
@@ -65,6 +65,7 @@ CarpoolNotifier 用它来获取：
 
 - `server_label`
 - `channel`
+- `changeip_provider`
 - `notified_ipv4`（用于“预告/开始”文案里的基线 IP）
 
 请求：
@@ -107,14 +108,14 @@ VPS 侧配置：
 
 判定规则（v1，与你确认的口径一致）：
 
-- 脚本开始立刻上报 `change_started`
+- provider 成功触发后立刻上报 `change_started`
 - 触发后等待 `CHANGE_MONITOR_START_DELAY_SECONDS` 再尝试获取公网 IPv4
   - 若设置了重启延迟（`REBOOT_DELAY_MINUTES=1..15`），则会在“预计重启时间”之后再加上该延迟，避免在重启前误判为 `change_no_change`
 - 获取到合法公网 IPv4 后即可判定终态：
   - `!= old_ipv4` → `change_succeeded`
   - `== old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
-    - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免脚本执行中误判，会等待一次断网/恢复或超时后才判定 `change_no_change`
+    - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免 provider 执行中误判，会等待一次断网/恢复或超时后才判定 `change_no_change`
 - 10 分钟内始终拿不到公网 IPv4 → `change_failed`（`no_ipv4_observed`）
 
 补充：`op_id`
@@ -148,13 +149,13 @@ VPS 侧配置：
    - 若当前存在“换 IP 会话”，则编辑会话消息并追加频道行
    - 否则向频道 + 管理员广播一条“公网 IP 变化”消息，并（可选）进入锁定期防止重复触发
 
-### 4.2 机器人触发换 IP（脚本 + 重启）
+### 4.2 机器人触发换 IP（provider + 可选重启）
 
 1. 用户/管理员在 Telegram 交互中触发
 2. CarpoolNotifier 调用 `ip-changer /info` 获取基线与频道
 3. CarpoolNotifier 在频道发布“预告”（可选）并安排任务
 4. 到达执行时间后，CarpoolNotifier 调用 `ip-changer /changeip`
-5. VPS 执行脚本并重启
+5. VPS 执行 provider；若 `REBOOT_DELAY_MINUTES=1..15` 则按配置重启，`-1` 则不重启
 6. IP 变化后 `ip-changer` 上报 → CarpoolNotifier 编辑同一条频道消息追加结果
 
 ## 5. 常见错误与定位

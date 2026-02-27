@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 
+const CHANGEIP_PROVIDERS = new Set(['script', 'exec', 'http_flow']);
+
 function parseBool(value) {
   const raw = String(value ?? '').trim().toLowerCase();
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
@@ -60,7 +62,25 @@ function loadConfigFromEnv(env = process.env) {
   const reportChannel = String(env.REPORT_CHANNEL || '').trim();
 
   const changeipEnabled = parseBool(env.CHANGEIP_ENABLED ?? '0');
-  const changeipScript = String(env.CHANGEIP_SCRIPT || '/root/changeip.sh').trim();
+  const changeipProvider = String(env.CHANGEIP_PROVIDER || '').trim().toLowerCase();
+  if (changeipEnabled && !changeipProvider) {
+    throw new Error('CHANGEIP_PROVIDER is required when CHANGEIP_ENABLED=1');
+  }
+  if (changeipEnabled && !CHANGEIP_PROVIDERS.has(changeipProvider)) {
+    throw new Error('CHANGEIP_PROVIDER must be one of: script, exec, http_flow');
+  }
+  const changeipScript = String(env.CHANGEIP_SCRIPT || '').trim();
+  const changeipExecCommand = String(env.CHANGEIP_EXEC_COMMAND || '').trim();
+  const changeipHttpFlowFile = String(env.CHANGEIP_HTTP_FLOW_FILE || '').trim();
+  if (changeipEnabled && changeipProvider === 'script' && !changeipScript) {
+    throw new Error('CHANGEIP_SCRIPT is required when CHANGEIP_PROVIDER=script');
+  }
+  if (changeipEnabled && changeipProvider === 'exec' && !changeipExecCommand) {
+    throw new Error('CHANGEIP_EXEC_COMMAND is required when CHANGEIP_PROVIDER=exec');
+  }
+  if (changeipEnabled && changeipProvider === 'http_flow' && !changeipHttpFlowFile) {
+    throw new Error('CHANGEIP_HTTP_FLOW_FILE is required when CHANGEIP_PROVIDER=http_flow');
+  }
   const rebootDelayMinutes = changeipEnabled ? parseStrictRebootDelayMinutes(env.REBOOT_DELAY_MINUTES, 1) : 1;
 
   const shutdownBin = resolveShutdownBin();
@@ -85,7 +105,10 @@ function loadConfigFromEnv(env = process.env) {
     serverLabel,
     reportChannel,
     changeipEnabled,
+    changeipProvider: changeipEnabled ? changeipProvider : '',
     changeipScript,
+    changeipExecCommand,
+    changeipHttpFlowFile,
     rebootDelayMinutes,
     shutdownBin,
     ipMonitorEnabled,

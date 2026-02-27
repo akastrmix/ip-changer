@@ -8,7 +8,7 @@
 
 - Node.js 脚本：`changeip_http_server.js`
   - 监听 HTTP 端口（默认 `0.0.0.0:8787`）
-  - 可选：提供 `/changeip` 触发换 IP + 重启
+  - 可选：提供 `/changeip` 触发换 IP + 可选重启（`REBOOT_DELAY_MINUTES=-1` 时不重启）
 - 可选：公网 IPv4 监测并上报到 CarpoolNotifier（仅在变化时上报）
 
 破坏性更新说明：
@@ -28,7 +28,7 @@
 - OS：Debian/Ubuntu 系
 - Node.js：建议 16+（不依赖第三方包）
 - systemd：用于自启与守护（通过 `install.sh` 安装）
-- 如果启用 `/changeip`：需要 root 权限调用 `shutdown` 与执行 `CHANGEIP_SCRIPT`
+- 如果启用 `/changeip`：需要 root 权限调用 `shutdown` 与执行 provider 触发动作（脚本/命令/http_flow）
 
 ## 3. 配置（环境变量）
 
@@ -45,8 +45,19 @@ HTTP 服务：
 一键换 IP（可选）：
 
 - `CHANGEIP_ENABLED`：`1/0`（默认建议 `0`）
-- `CHANGEIP_SCRIPT`：脚本绝对路径（默认 `/root/changeip.sh`）
-- `REBOOT_DELAY_MINUTES`：脚本触发后，几分钟后重启（设置为 `-1` 表示不重启；否则仅允许 `1..15`，禁止 `0`）
+- `CHANGEIP_PROVIDER`：provider 类型（`script` / `exec` / `http_flow`；当 `CHANGEIP_ENABLED=1` 时必填）
+- `CHANGEIP_SCRIPT`：provider=`script` 时使用的脚本绝对路径
+- `CHANGEIP_EXEC_COMMAND`：provider=`exec` 时执行的命令
+- `CHANGEIP_HTTP_FLOW_FILE`：provider=`http_flow` 时使用的 flow JSON 绝对路径
+- `REBOOT_DELAY_MINUTES`：provider 触发后，几分钟后重启（设置为 `-1` 表示不重启；否则仅允许 `1..15`，禁止 `0`）
+
+`http_flow` flow 文件要点（v1）：
+
+- 执行前会先进行“编译期校验”（结构、步骤字段、模板变量引用、正则/状态码格式）
+- 顶层需包含非空 `steps` 数组
+- 支持步骤：`request` / `extract` / `assert` / `sleep` / `set`
+- 支持模板：`${var_name}` 与 `${ENV:VAR_NAME}`
+- 自动维护 cookie 会话并支持重定向（默认开启）
 
 IPv4 监测与上报（可选）：
 
@@ -61,7 +72,7 @@ IPv4 监测与上报（可选）：
 - `IP_EVENTS_ENABLED`：`1/0`
 - `IP_EVENTS_ENDPOINT`：例如 `https://<worker>/internal/ip-events`
 - `IP_EVENTS_TOKEN`：Bearer token（与 Worker secret `IP_EVENTS_TOKEN` 一致）
-- `CHANGE_MONITOR_START_DELAY_SECONDS`：触发脚本后延迟多久开始监测（默认 `30`；若设置了重启延迟，则会在“预计重启时间”之后再加上该延迟）
+- `CHANGE_MONITOR_START_DELAY_SECONDS`：触发 provider 后延迟多久开始监测（默认 `30`；若设置了重启延迟，则会在“预计重启时间”之后再加上该延迟）
 - `CHANGE_MONITOR_INTERVAL_SECONDS`：监测间隔（默认 `10`；仅在“换 IP 会话进行中”使用）
 - `CHANGE_MONITOR_TIMEOUT_SECONDS`：监测超时（默认 `600` / 10 分钟）
 
@@ -77,7 +88,7 @@ IPv4 监测与上报（可选）：
   - 若 `ip1 != old_ipv4`：`change_succeeded`
   - 若 `ip1 == old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
-    - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免“脚本执行中但网络仍可用”的误判，会等待一次“断网→恢复”或超时后再判定为 `change_no_change`
+    - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免“provider 执行中但网络仍可用”的误判，会等待一次“断网→恢复”或超时后再判定为 `change_no_change`
 - 超时仍无法获取公网 IPv4：`change_failed`（`no_ipv4_observed`）
 
 重启延迟规则：
@@ -101,6 +112,7 @@ IPv4 监测与上报（可选）：
   - `server_label`
   - `channel`
   - `changeip_enabled`
+  - `changeip_provider`：`CHANGEIP_PROVIDER`（未启用 `/changeip` 时为 `null`）
   - `ip_monitor_enabled`：只有监测真正“可用”时为 true（即 `IP_MONITOR_ENABLED=1` 且 `IP_EVENTS_*` 配置齐全）
   - `notified_ipv4`：状态文件中的 `notified_ipv4`（可能为 `null`）
 
@@ -114,18 +126,41 @@ IPv4 监测与上报（可选）：
 
 - 鉴权：Body 必须包含 `{ "token": "<AUTH_TOKEN>" }`，否则 `403`
 - 若未启用事件流上报（`IP_EVENTS_ENABLED=1` 且配置齐全），则会返回 `500`：`ip events not configured`
+- provider 规则：
+  - `CHANGEIP_PROVIDER` 必须为 `script` / `exec` / `http_flow`
+  - provider=`http_flow` 时，flow 文件必须是合法 JSON 对象，且包含非空 `steps` 数组
 - 失败：
-  - 脚本不存在：`500` `changeip script not found`
-  - 脚本不可读：`500` `changeip script not readable`
-  - spawn 失败：`500` `failed to spawn changeip script`
+  - provider=`script`：
+    - 脚本路径不是绝对路径：`500` `changeip script path must be absolute`
+    - 脚本不存在：`500` `changeip script not found`
+    - 脚本不是常规文件：`500` `changeip script is not a regular file`
+    - 脚本不可读：`500` `changeip script not readable`
+    - spawn 失败：`500` `failed to spawn changeip script`
+    - 脚本启动后很快异常退出：`500` `changeip script exited early`
+  - provider=`exec`：
+    - 命令为空：`500` `changeip exec command is empty`
+    - spawn 失败：`500` `failed to spawn changeip exec command`
+    - 命令启动后很快异常退出：`500` `changeip exec command exited early`
+  - provider=`http_flow`：
+    - flow JSON 非法：`500` `invalid http_flow json: ...`
+    - flow 顶层结构非法：`500` `http_flow file must be a JSON object`
+    - `steps` 为空或不是数组：`500` `http_flow steps must be a non-empty array`
+    - 执行中步骤失败（例如断言失败/变量缺失/请求异常）：`500` `changeip http_flow flow failed`
+  - 所有 provider 启动失败响应都包含 `provider_error_code`，用于稳定机读分支：
+    - `provider.unsupported`
+    - `provider.config_invalid`
+    - `provider.spawn_failed`
+    - `provider.exited_early`
+    - `provider.runtime_failed`
 - 成功：
-  - 后台执行：`/bin/bash <CHANGEIP_SCRIPT>`（不要求可执行位，但要求可读）
+  - 后台执行：按 provider 触发（`script` / `exec` / `http_flow`）
   - 重启行为：
     - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
     - 否则安排重启：`shutdown -r +<REBOOT_DELAY_MINUTES>`
   - 返回 `200`，包含：
     - `op_id`（用于 bot 会话关联）
     - `message`
+    - `changeip_provider`
     - `server_label`
     - `channel`
     - `old_ipv4`（来自状态文件 `notified_ipv4`，可为 `null`）

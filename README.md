@@ -2,13 +2,13 @@
 
 一个极简的常驻服务，用于在 Debian VPS 上：
 
-- （可选）通过 HTTP 触发 `changeip.sh` + 自动重启，实现一键更换公网 IP
+- （可选）通过 HTTP 触发 provider（脚本/命令/http_flow），并按配置可选自动重启，实现一键更换公网 IP
 - 监测公网 **IPv4** 是否发生变化，并上报到 CarpoolNotifier（Cloudflare Worker），由机器人自动播报到频道 + 管理员
 
 本项目只负责：
 
 - 在 VPS 上监听一个 HTTP 接口（默认 `0.0.0.0:8787`）。
-- （可选）接收到带密钥的请求后后台执行 `changeip.sh` 并安排重启。
+- （可选）接收到带密钥的请求后按 provider 执行换 IP 触发动作，并按 `REBOOT_DELAY_MINUTES` 可选安排重启（`-1` 表示不重启）。
 - 定期检测公网 IPv4 变化并上报到 CarpoolNotifier。
 
 ---
@@ -33,13 +33,15 @@
 - `install.sh`
   - 安装脚本：创建 systemd 服务、配置环境变量、启用并启动该 HTTP 服务。
 - `uninstall.sh`
-  - 卸载脚本：停用并删除 systemd 服务和配置，恢复系统到安装前状态（不删除你的 `changeip.sh` 和仓库代码）。
+  - 卸载脚本：停用并删除 systemd 服务和配置，恢复系统到安装前状态（不删除你的 provider 相关脚本/配置和仓库代码）。
+- `flows/`
+  - `http_flow` 示例配置目录（例如 `flows/ippanel.boil.network.sample.json`）。
 
-在服务器上，你需要自备一个可用的换 IP 脚本：
+如果启用 `/changeip`，你需要按 provider 准备触发能力：
 
-- `/root/changeip.sh`
-  - 实际执行换 IP 的脚本，本项目默认假定它位于 `/root/changeip.sh`。
-  - 该脚本 **不包含在仓库中**，由你自行维护。
+- `script` provider：准备可由 `/bin/bash <CHANGEIP_SCRIPT>` 执行的脚本（例如 `/root/changeip.sh`）
+- `exec` provider：准备可执行命令（`CHANGEIP_EXEC_COMMAND`）
+- `http_flow` provider：准备 flow JSON 文件（`CHANGEIP_HTTP_FLOW_FILE`）
 
 安装完成后，对服务器产生的**持久影响**仅包括：
 
@@ -57,10 +59,8 @@
 
 目标环境：**Debian / Ubuntu 系** VPS，具有以下条件：
 
-- （如果启用 `/changeip`）已存在且可手动执行的换 IP 脚本 `changeip.sh`：
-  - 默认路径：`/root/changeip.sh`（可在安装时自定义）。
-  - 使用 `root` 权限执行时应能成功完成换 IP。
 - 安装了 Node.js（建议 16+，能运行普通 Node 脚本）。
+- 若启用 `/changeip`，需按所选 provider 预先准备好可触发的换 IP 机制（脚本/命令/flow 文件）。
 
 如果你尚未安装 Node.js，可在 Debian / Ubuntu 上执行：
 
@@ -101,6 +101,7 @@ apt install -y nodejs
         "server_label": "CMHK",
         "channel": "@your_channel",
         "changeip_enabled": true,
+        "changeip_provider": "script",
         "ip_events_enabled": true,
         "ip_monitor_enabled": true,
         "notified_ipv4": "1.2.3.4"
@@ -119,8 +120,21 @@ apt install -y nodejs
     - 校验规则：
       - `token` 字段必须等于环境变量 `AUTH_TOKEN`。
       - 不满足则返回 `403`。
+      - `CHANGEIP_PROVIDER` 在启用 `/changeip` 时必须显式配置（`script` / `exec` / `http_flow`）。
+      - `script` provider：要求 `CHANGEIP_SCRIPT` 为可读常规文件（绝对路径）。
+      - `exec` provider：要求 `CHANGEIP_EXEC_COMMAND` 非空。
+      - `http_flow` provider：要求 `CHANGEIP_HTTP_FLOW_FILE` 为可读常规文件（绝对路径，内容需为合法 flow JSON）。
     - 通过校验后：
-      - 后台执行：`/bin/bash <CHANGEIP_SCRIPT>`
+      - 根据 provider 后台触发对应换 IP 实现（脚本/命令/http_flow）
+      - 若 provider 启动失败，返回 `500`，并带稳定错误码字段：
+        ```json
+        {
+          "ok": false,
+          "error": "changeip script exited early",
+          "provider_error_code": "provider.exited_early"
+        }
+        ```
+        `provider_error_code` 取值：`provider.unsupported` / `provider.config_invalid` / `provider.spawn_failed` / `provider.exited_early` / `provider.runtime_failed`
       - 重启行为：
         - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
         - 否则安排系统重启：
@@ -133,6 +147,7 @@ apt install -y nodejs
           "ok": true,
           "op_id": "20260128T061500Z_cmhk_7f2c0f",
           "message": "changeip started, ...",
+          "changeip_provider": "script",
           "server_label": "CMHK",
           "channel": "@your_channel",
           "old_ipv4": "1.2.3.4",
@@ -144,19 +159,41 @@ apt install -y nodejs
 所有行为均由以下环境变量控制（通过 `/etc/default/changeip-http` 配置）：
 
 - `AUTH_TOKEN`：共享密钥，必须设置。用于认证来自 Telegram 机器人的请求。
-- `CHANGEIP_SCRIPT`：`changeip.sh` 的绝对路径（默认 `/root/changeip.sh`）。
 - `PORT`：HTTP 监听端口（默认 `8787`）。
-- `REBOOT_DELAY_MINUTES`：调用 `changeip.sh` 后，几分钟后重启（设置为 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）。
 - `CHANGEIP_ENABLED`：是否启用 `/changeip` 接口（`1` 启用，`0` 关闭）。
+- `CHANGEIP_PROVIDER`：`/changeip` provider（`script` / `exec` / `http_flow`；启用 `/changeip` 时必填）
+- `CHANGEIP_SCRIPT`：当 provider=`script` 时使用的脚本绝对路径
+- `CHANGEIP_EXEC_COMMAND`：当 provider=`exec` 时执行的命令
+- `CHANGEIP_HTTP_FLOW_FILE`：当 provider=`http_flow` 时使用的 flow JSON 绝对路径
+- `REBOOT_DELAY_MINUTES`：触发 provider 后，几分钟后重启（设置为 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）。
 
-### 3.1 IPv4 监测与上报说明
+### 3.1 `http_flow` 配置文件（`CHANGEIP_HTTP_FLOW_FILE`）
+
+`http_flow` provider 会按 JSON 中的步骤顺序执行 HTTP 流程，适合“登录面板 + 依次点击按钮”这类换 IP 场景。
+
+- 推荐从示例文件开始改：`flows/ippanel.boil.network.sample.json`
+- 支持步骤类型：
+  - `request`：发送 HTTP 请求（支持 `json` / `form` / `body`）
+  - `extract`：从响应中正则提取变量
+  - `assert`：对响应/变量做断言
+  - `sleep`：等待毫秒
+  - `set`：设置流程变量（可从环境变量读取）
+- 支持变量模板：
+  - `${var_name}`：引用 flow 内变量
+  - `${ENV:VAR_NAME}`：引用系统环境变量（推荐用于账号密码）
+- 会自动维护 cookie 会话并跟随重定向（默认开启）。
+- flow 在执行前会先做编译期校验（JSON 结构、步骤字段、变量引用、正则/状态码格式），不合法会直接返回 `500`。
+
+建议不要把敏感账号密码明文写进 flow 文件，而是放到环境变量，再通过 `${ENV:...}` 引用。
+
+### 3.2 IPv4 监测与上报说明
 
 当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**，若与“上次已成功上报的 IPv4”不同，则向 CarpoolNotifier 的内部接口上报一次（仅在变化时播报）。
 
 注意：
 
 - 为满足“只播报 IPv4”，本服务对公网 IP 获取与上报请求均强制使用 **IPv4 出站**（`family=4`）。
-- 若你设置了 `IP_MONITOR_ENABLED=1`，但未配置 `IP_EVENTS_ENDPOINT` 或 `IP_EVENTS_TOKEN`，服务会在启动日志中提示并自动禁用监测；此时 `/info` 返回的 `ip_monitor_enabled` 也会为 `false`。
+- 若你设置了 `IP_MONITOR_ENABLED=1`，但未配置 `IP_EVENTS_ENDPOINT` 或 `IP_EVENTS_TOKEN`，监测不会生效；此时 `/info` 返回的 `ip_monitor_enabled` 也会为 `false`。
 
 环境变量：
 
@@ -185,18 +222,13 @@ cd ip-changer   # 仓库目录
 
 > 替换 `https://github.com/<your-name>/ip-changer.git` 为你自己的仓库地址。
 
-### 4.2 确认 `changeip.sh` 可用
+### 4.2 确认 `/changeip` provider 资源可用（仅在启用时）
 
-确保你的 VPS 上存在脚本，并以 `root` 手动执行无误：
+如果你计划启用 `/changeip`，请先准备 provider 对应资源：
 
-```bash
-ls -l /root/changeip.sh
-/bin/bash /root/changeip.sh
-```
-
-如路径不同，请记住其绝对路径，稍后安装脚本会询问。
-
-> 说明：本项目通过 `/bin/bash <CHANGEIP_SCRIPT>` 执行脚本，因此脚本 **可执行位不是必须**；但如果你希望直接 `./changeip.sh` 运行，可以自行 `chmod +x`。
+- `script`：确认脚本存在并可由 `/bin/bash <CHANGEIP_SCRIPT>` 执行
+- `exec`：确认命令可在 root 环境直接执行
+- `http_flow`：确认 flow JSON 文件存在且可读，并根据面板实际请求链填写步骤
 
 ### 4.3 确认 Node.js 可用
 
@@ -232,9 +264,12 @@ chmod +x install.sh uninstall.sh
 2. 检查 `node` 命令是否存在。
 3. 询问配置项（有默认值）：
    - HTTP 端口（默认 `8787`）
-   - 是否启用 `/changeip`（默认关闭；仅在 VPS 支持脚本换 IP 时才建议开启）
+   - 是否启用 `/changeip`（默认关闭）
    - 若启用 `/changeip`：
-     - `changeip.sh` 路径（默认 `/root/changeip.sh`）
+     - 选择 `CHANGEIP_PROVIDER`（`script` / `exec` / `http_flow`）
+     - provider=`script`：输入 `CHANGEIP_SCRIPT`
+     - provider=`exec`：输入 `CHANGEIP_EXEC_COMMAND`
+     - provider=`http_flow`：输入 `CHANGEIP_HTTP_FLOW_FILE`
      - 重启延迟分钟数（默认 `1`；输入 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）
    - 共享密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
@@ -293,7 +328,7 @@ curl -X POST "http://127.0.0.1:8787/changeip" \
   -d '{"token":"<YOUR_TOKEN>"}'
 ```
 
-看到 `ok: true` 且提示即将重启，即代表服务工作正常（注意这会触发实际的换 IP + 重启逻辑，请谨慎测试）。
+看到 `ok: true` 即代表服务工作正常；若返回里 `reboot_scheduled=true` 说明会重启，若 `reboot_scheduled=false` 则不会重启（注意这会触发实际的换 IP 逻辑，请谨慎测试）。
 
 ---
 
@@ -334,17 +369,18 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
    - `AUTH_TOKEN`：安装时设置或自动生成的值。
    - `SERVER_LABEL`：本机标签（例如 `CMHK` / `HKT` / `HKBN`），用于在 bot 侧区分不同服务器。
    - `PORT`：HTTP 端口（默认 `8787`）。
+   - `CHANGEIP_PROVIDER`：对应 provider（`script` / `exec` / `http_flow`）。
 3. 在 CarpoolNotifier（Cloudflare Worker）中为该 `SERVER_LABEL` 配置“地址 + token”映射：
    - `CHANGEIP_ENDPOINTS_JSON`（vars）：`{"<SERVER_LABEL>":"http://<VPS_IP>:8787/changeip"}`
    - `CHANGEIP_TOKENS_JSON`（secret）：`{"<SERVER_LABEL>":"<AUTH_TOKEN>"}`
-   - `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记为 `script`（例如 `CMHK:script`）
+   - `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记为 provider（例如 `CMHK:script` / `CMHK:exec` / `CMHK:http_flow`）
    - 可选：`CHANGEIP_INFO_ENDPOINTS_JSON`（vars）：如不写，CarpoolNotifier 会把 `/changeip` 自动推导为 `/info`
 4. 重新部署 / 启动 CarpoolNotifier，使其读取新的配置。
 5. 用管理员账号向 Telegram 机器人发送 `/changeip`：
    - 机器人会校验你是否管理员。
    - 按 `SERVER_LABEL` 找到对应的 ip-changer 服务器并触发换 IP。
-   - 通过后提示“已收到更换 IP 请求……约 15 分钟后自动重启”。
-   - VPS 后台执行 `changeip.sh` 并在设定时间后重启。
+   - 通过后提示“已收到更换 IP 请求”；是否重启取决于该 VPS 的 `REBOOT_DELAY_MINUTES` 配置。
+   - VPS 后台按 provider 执行换 IP 动作；若配置 `REBOOT_DELAY_MINUTES=1..15` 则会在设定时间后重启，`-1` 则不重启。
 
 > 说明：机器人也可以调用本服务的 `/info` 获取 `server_label` / `channel` / `notified_ipv4`，用于在频道内提前发布“即将换 IP”预告，并在同一条消息中持续更新进度。
 
@@ -386,7 +422,10 @@ systemctl restart changeip-http
   - `AUTH_TOKEN`
   - `PORT`
   - `CHANGEIP_ENABLED`
+  - `CHANGEIP_PROVIDER`
   - `CHANGEIP_SCRIPT`
+  - `CHANGEIP_EXEC_COMMAND`
+  - `CHANGEIP_HTTP_FLOW_FILE`
   - `REBOOT_DELAY_MINUTES`
   - `IP_MONITOR_ENABLED`
   - `IP_MONITOR_INTERVAL_SECONDS`
@@ -403,6 +442,24 @@ systemctl restart changeip-http
 
 如果你修改了 `AUTH_TOKEN`，记得同步更新 CarpoolNotifier 中该 `SERVER_LABEL` 对应的 `CHANGEIP_TOKENS_JSON` 条目。
 
+### 7.3 本地回归脚本（开发/改动后建议执行）
+
+仓库提供了一个零依赖回归脚本，用于覆盖 `/changeip` 的关键并发与异常路径：
+
+```bash
+node scripts/changeip_regression.js
+```
+
+当前覆盖点：
+
+- 并发请求 `/changeip`（`script` 与 `exec` provider）：只允许 1 个成功，其余返回 `409`
+- `CHANGEIP_SCRIPT` 相对路径：返回 `500 changeip script path must be absolute`
+- `CHANGEIP_SCRIPT` 非常规文件：返回 `500 changeip script is not a regular file`
+- 脚本快速异常退出：返回 `500 changeip script exited early`，并确认不会残留/复活 `pending_change.json`
+- `exec` 命令快速异常退出：返回 `500 changeip exec command exited early`，并确认不会残留/复活 `pending_change.json`
+- `http_flow` provider：验证“登录 + 重定向 + 触发动作”流程（含 cookie 会话与变量提取）
+- `http_flow` provider：验证编译期校验（未知变量引用会在执行前直接拒绝）
+
 ---
 
 ## 8. 常见问题
@@ -413,7 +470,7 @@ systemctl restart changeip-http
 - **Q: 可以不用 systemd，直接前台运行吗？**  
   A: 可以。在仓库目录直接运行：
   ```bash
-  AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=1 \
+  AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_PROVIDER=script CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=1 \
   IP_EVENTS_ENABLED=1 IP_EVENTS_ENDPOINT=... IP_EVENTS_TOKEN=... \
   IP_MONITOR_ENABLED=1 IP_MONITOR_INTERVAL_SECONDS=60 SERVER_LABEL=... REPORT_CHANNEL=@... \
   node changeip_http_server.js

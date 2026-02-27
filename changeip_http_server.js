@@ -81,6 +81,7 @@ function handleInfo(req, res) {
       server_label: config.serverLabel,
       channel: config.reportChannel,
       changeip_enabled: config.changeipEnabled,
+      changeip_provider: config.changeipEnabled ? config.changeipProvider : null,
       ip_events_enabled: config.ipEventsActive,
       ip_monitor_enabled: config.ipMonitorEnabled && config.ipEventsActive,
       notified_ipv4: state.notified_ipv4 || null
@@ -137,7 +138,13 @@ server.listen(config.port, '0.0.0.0', () => {
     console.log(`[changeip-http] ipv4 monitor enabled: interval=${config.ipMonitorIntervalSeconds}s`);
   }
   if (config.changeipEnabled) {
-    console.log(`[changeip-http] /changeip enabled: script=${config.changeipScript}`);
+    console.log(`[changeip-http] /changeip enabled: provider=${config.changeipProvider}`);
+    if (config.changeipProvider === 'script') {
+      console.log(`[changeip-http] changeip script: ${config.changeipScript}`);
+    }
+    if (config.changeipProvider === 'http_flow') {
+      console.log(`[changeip-http] changeip http_flow file: ${config.changeipHttpFlowFile}`);
+    }
   }
 });
 server.on('error', (err) => {
@@ -146,4 +153,3 @@ server.on('error', (err) => {
 });
 
 startMonitor(config);
-

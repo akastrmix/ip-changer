@@ -1,10 +1,19 @@
-const fs = require('fs');
 const { spawn } = require('child_process');
 
 const { fetchPublicIpv4, isValidIpv4 } = require('./ipv4');
-const { loadIpState, saveIpState, loadPendingChange, savePendingChange, clearPendingChange } = require('./state');
+const { loadIpState, saveIpState } = require('./state');
 const { makeChangeOpId } = require('./opId');
-const { postIpEvent } = require('./events');
+const { startProvider } = require('./providers');
+const {
+  clearChangeSession,
+  createPendingChangeSession,
+  hasInFlightChangeSession,
+  loadChangeSession,
+  persistNewChangeSession,
+  updateChangeSessionIfCurrent,
+  sendChangeFailedEvent,
+  sendChangeStartedEvent
+} = require('./changeSession');
 
 function scheduleReboot(config) {
   if (config.rebootDelayMinutes === -1) {
@@ -26,41 +35,6 @@ function scheduleReboot(config) {
   return { scheduled: true, delayMinutes };
 }
 
-function validateScriptReadable(scriptPath) {
-  if (!fs.existsSync(scriptPath)) {
-    return { ok: false, error: 'changeip script not found' };
-  }
-  try {
-    fs.accessSync(scriptPath, fs.constants.R_OK);
-  } catch {
-    return { ok: false, error: 'changeip script not readable' };
-  }
-  return { ok: true, error: '' };
-}
-
-async function trySendChangeStarted(config, pending) {
-  const payload = {
-    server_label: config.serverLabel,
-    channel: config.reportChannel,
-    op_id: pending.op_id,
-    ts: pending.started_at,
-    event: 'change_started'
-  };
-  if (isValidIpv4(pending.old_ipv4)) {
-    payload.old_ipv4 = pending.old_ipv4;
-  }
-
-  const result = await postIpEvent(config, payload);
-  if (result.ok) {
-    pending.started_sent = true;
-    pending.last_error = '';
-    savePendingChange(config, pending);
-  } else {
-    pending.last_error = result.error || pending.last_error || '';
-    savePendingChange(config, pending);
-  }
-}
-
 async function triggerChangeIp(config) {
   if (!config.changeipEnabled) {
     return { status: 403, body: { ok: false, error: 'changeip disabled' } };
@@ -69,17 +43,12 @@ async function triggerChangeIp(config) {
     return { status: 500, body: { ok: false, error: 'ip events not configured' } };
   }
 
-  const inFlight = loadPendingChange(config);
-  if (inFlight?.op_id) {
+  if (hasInFlightChangeSession(config)) {
+    const inFlight = loadChangeSession(config);
     return {
       status: 409,
       body: { ok: false, error: 'change already in progress', op_id: String(inFlight.op_id) }
     };
-  }
-
-  const scriptCheck = validateScriptReadable(config.changeipScript);
-  if (!scriptCheck.ok) {
-    return { status: 500, body: { ok: false, error: scriptCheck.error } };
   }
 
   const startedAt = new Date();
@@ -87,76 +56,64 @@ async function triggerChangeIp(config) {
 
   const state = loadIpState(config);
   let oldIpv4 = isValidIpv4(state.notified_ipv4) ? state.notified_ipv4 : null;
+
+  const pending = createPendingChangeSession(config, {
+    opId,
+    oldIpv4,
+    startedAt
+  });
+  if (!persistNewChangeSession(config, pending)) {
+    return { status: 500, body: { ok: false, error: 'failed to persist change session' } };
+  }
+
   if (!oldIpv4) {
     try {
       const observed = await fetchPublicIpv4({ userAgent: 'ip-changer', timeoutMs: 2000 });
       if (isValidIpv4(observed)) {
-        oldIpv4 = observed;
-        state.notified_ipv4 = observed;
-        state.observed_ipv4 = observed;
-        state.updated_at = startedAt.toISOString();
-        saveIpState(config, state);
+        const updated = updateChangeSessionIfCurrent(config, opId, (next) => {
+          next.old_ipv4 = observed;
+        });
+        if (updated) {
+          oldIpv4 = observed;
+          state.notified_ipv4 = observed;
+          state.observed_ipv4 = observed;
+          state.updated_at = startedAt.toISOString();
+          saveIpState(config, state);
+        }
       }
     } catch {
-      // ignore: will be handled later if old_ipv4 stays unknown
+      // ignore: if lookup fails, monitor will handle unknown baseline later.
     }
   }
 
-  // Start monitoring only after the scheduled reboot window (if any),
-  // otherwise we might observe the pre-reboot IPv4 and incorrectly conclude "no_change".
-  const rebootDelayMs = config.rebootDelayMinutes === -1 ? 0 : Math.max(config.rebootDelayMinutes, 1) * 60 * 1000;
-  const monitorAfterMs = startedAt.getTime() + rebootDelayMs + config.changeMonitorStartDelaySeconds * 1000;
-  const timeoutAtMs = monitorAfterMs + config.changeMonitorTimeoutSeconds * 1000;
+  console.log(`[changeip-http] starting changeip provider: ${config.changeipProvider} ...`);
+  const providerResult = await startProvider(config);
+  if (!providerResult.ok) {
+    const detail = providerResult.detail ? ` (${providerResult.detail})` : '';
+    console.error(`[changeip-http] failed to start provider ${config.changeipProvider}: ${providerResult.error}${detail}`);
+    await sendChangeFailedEvent(config, {
+      opId,
+      oldIpv4,
+      reason: providerResult.reason || 'provider_start_failed'
+    });
+    clearChangeSession(config);
+    return {
+      status: 500,
+      body: {
+        ok: false,
+        error: providerResult.error || 'failed to start changeip provider',
+        provider_error_code: providerResult.code || ''
+      }
+    };
+  }
 
-  const pending = {
-    op_id: opId,
-    server_label: config.serverLabel,
-    channel: config.reportChannel,
-    old_ipv4: oldIpv4,
-    started_at: startedAt.toISOString(),
-    reboot_delay_minutes: config.rebootDelayMinutes,
-    started_sent: false,
-    monitor_after_ms: monitorAfterMs,
-    timeout_at_ms: timeoutAtMs,
-    last_error: ''
-  };
-  savePendingChange(config, pending);
+  if (providerResult.exitedEarly) {
+    console.log(`[changeip-http] provider ${config.changeipProvider} exited quickly with code 0`);
+  }
 
-  void trySendChangeStarted(config, pending).catch((err) => {
+  void sendChangeStartedEvent(config, opId).catch((err) => {
     console.error('[changeip-http] change_started report error:', String(err));
   });
-
-  console.log(`[changeip-http] starting changeip script: ${config.changeipScript} ...`);
-
-  let proc;
-  try {
-    proc = spawn('/bin/bash', [config.changeipScript], {
-      stdio: 'ignore',
-      detached: true
-    });
-  } catch (err) {
-    console.error('[changeip-http] failed to spawn changeip script:', err);
-    try {
-      await postIpEvent(config, {
-        server_label: config.serverLabel,
-        channel: config.reportChannel,
-        op_id: opId,
-        ts: new Date().toISOString(),
-        event: 'change_failed',
-        reason: 'spawn_failed',
-        ...(oldIpv4 ? { old_ipv4: oldIpv4 } : {})
-      });
-    } catch (reportErr) {
-      console.error('[changeip-http] change_failed report error:', String(reportErr));
-    }
-    clearPendingChange(config);
-    return { status: 500, body: { ok: false, error: 'failed to spawn changeip script' } };
-  }
-
-  proc.on('error', (err) => {
-    console.error('[changeip-http] failed to start changeip script:', err);
-  });
-  proc.unref();
 
   const reboot = scheduleReboot(config);
 
@@ -168,6 +125,7 @@ async function triggerChangeIp(config) {
       message: reboot.scheduled
         ? `changeip started, reboot scheduled in ${reboot.delayMinutes} minutes`
         : 'changeip started, reboot disabled',
+      changeip_provider: config.changeipProvider,
       server_label: config.serverLabel,
       channel: config.reportChannel,
       old_ipv4: oldIpv4,
