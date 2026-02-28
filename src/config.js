@@ -87,6 +87,7 @@ function loadConfigFromEnv(env = process.env) {
 
   const ipMonitorEnabled = parseBool(env.IP_MONITOR_ENABLED ?? '0');
   const ipMonitorIntervalSeconds = parsePositiveInt(env.IP_MONITOR_INTERVAL_SECONDS, 60, { min: 10, max: 24 * 60 * 60 });
+  const ipv6MonitorEnabled = parseBool(env.IPV6_MONITOR_ENABLED ?? '0');
   const ipStateFile = String(env.IP_STATE_FILE || '/var/lib/changeip-http/ip_state.json').trim();
   const pendingChangeFile = String(env.PENDING_CHANGE_FILE || '/var/lib/changeip-http/pending_change.json').trim();
 
@@ -113,6 +114,7 @@ function loadConfigFromEnv(env = process.env) {
     shutdownBin,
     ipMonitorEnabled,
     ipMonitorIntervalSeconds,
+    ipv6MonitorEnabled,
     ipStateFile,
     pendingChangeFile,
     ipEventsEnabled,

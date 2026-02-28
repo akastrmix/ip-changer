@@ -1,15 +1,15 @@
-# ip-changer — HTTP Trigger + IPv4 变化监测
+# ip-changer — HTTP Trigger + IPv4/IPv6 变化监测
 
 一个极简的常驻服务，用于在 Debian VPS 上：
 
 - （可选）通过 HTTP 触发 provider（脚本/命令/http_flow），并按配置可选自动重启，实现一键更换公网 IP
-- 监测公网 **IPv4** 是否发生变化，并上报到 CarpoolNotifier（Cloudflare Worker），由机器人自动播报到频道 + 管理员
+- 监测公网 **IPv4/IPv6** 是否发生变化，并上报到 CarpoolNotifier（Cloudflare Worker）
 
 本项目只负责：
 
 - 在 VPS 上监听一个 HTTP 接口（默认 `0.0.0.0:8787`）。
 - （可选）接收到带密钥的请求后按 provider 执行换 IP 触发动作，并按 `REBOOT_DELAY_MINUTES` 可选安排重启（`-1` 表示不重启）。
-- 定期检测公网 IPv4 变化并上报到 CarpoolNotifier。
+- 定期检测公网 IPv4/IPv6 变化并上报到 CarpoolNotifier。
 
 ---
 
@@ -19,6 +19,8 @@
 - `docs/SPEC.md`：行为规格（接口、状态文件、监测/上报规则）
 - `docs/INTEGRATION.md`：与 CarpoolNotifier 的对接契约
 - `docs/RUNBOOK.md`：运维手册（部署/更新/排障）
+- `docs/ARCHITECTURE.md`：`src/` 模块分层与职责地图
+- `docs/BOIL_FLOW.md`：Boil 面板专用 flow 说明（变量映射、流程、兜底与排障）
 - `CHANGELOG.md`：版本变更记录
 
 ---
@@ -28,14 +30,20 @@
 本仓库包含以下主要文件：
 
 - `changeip_http_server.js`
-  - 使用 Node.js 编写的极简常驻服务（HTTP + IPv4 监测上报）。
+  - 使用 Node.js 编写的极简常驻服务（HTTP + IPv4/IPv6 监测上报）。
   - 不依赖任何第三方 NPM 包，仅使用 Node 标准库。
 - `install.sh`
   - 安装脚本：创建 systemd 服务、配置环境变量、启用并启动该 HTTP 服务。
 - `uninstall.sh`
   - 卸载脚本：停用并删除 systemd 服务和配置，恢复系统到安装前状态（不删除你的 provider 相关脚本/配置和仓库代码）。
 - `flows/`
-  - `http_flow` 示例配置目录（例如 `flows/ippanel.boil.network.sample.json`）。
+  - `http_flow` 配置目录；示例文件放在 `flows/samples/`（例如 `flows/samples/ippanel.boil.network.sample.json`）。
+- `src/`
+  - `change/trigger.js`：`/changeip` 入口编排（会话创建、provider 触发、可选重启）。
+  - `change/session.js`：`pending_change` 状态机与 `change_*` 事件构造/上报。
+  - `monitor.js`：会话终态判定（`change_succeeded/no_change/failed`，仅基于 IPv4）与自然 IPv4/IPv6 监测。
+  - `contracts/ipEvents.js`：事件契约（枚举、版本、字段校验）。
+  - `providers/`：`script` / `exec` / `http_flow` provider 及公共错误模型。
 
 如果启用 `/changeip`，你需要按 provider 准备触发能力：
 
@@ -47,7 +55,7 @@
 
 - 创建 systemd 单元：`/etc/systemd/system/changeip-http.service`
 - 创建环境变量配置文件：`/etc/default/changeip-http`
-- （启用监测上报时）创建状态目录：`/var/lib/changeip-http`（用于保存上次已上报 IPv4，卸载会删除）
+- （启用监测上报时）创建状态目录：`/var/lib/changeip-http`（用于保存上次已上报 IPv4/IPv6，卸载会删除）
 
 卸载脚本会删除上述文件/目录并重新加载 systemd，确保**不留下任何系统级残留**。
 
@@ -85,7 +93,7 @@ apt install -y nodejs
       { "ok": true, "service": "changeip-http" }
       ```
   - `POST /info`
-    - 获取本机 `SERVER_LABEL` / `REPORT_CHANNEL` / 上次已记录的 IPv4（不触发换 IP）。
+    - 获取本机 `SERVER_LABEL` / `REPORT_CHANNEL` / 上次已记录的 IPv4/IPv6（不触发换 IP）。
     - 请求头：`Content-Type: application/json`
     - 请求体示例：
       ```json
@@ -104,12 +112,26 @@ apt install -y nodejs
         "changeip_provider": "script",
         "ip_events_enabled": true,
         "ip_monitor_enabled": true,
-        "notified_ipv4": "1.2.3.4"
+        "ipv6_monitor_enabled": false,
+        "ip_events_contract_version": "2026-02-28.v1",
+        "ip_events_contract_versions_supported": ["2026-02-28.v1"],
+        "notified_ipv4": "1.2.3.4",
+        "notified_ipv6": null,
+        "runtime_metrics": {
+          "uptime_seconds": 123,
+          "counters": {
+            "ip_event_post_attempts_total": 8,
+            "ip_event_post_ok_total": 8
+          }
+        }
       }
       ```
     - 说明：
       - `ip_events_enabled`：事件流上报是否可用（需要 `IP_EVENTS_ENABLED=1` 且配置了 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN`）。
       - `ip_monitor_enabled`：IPv4 变化监测是否可用（需要 `IP_MONITOR_ENABLED=1` 且 `ip_events_enabled=true`）。
+      - `ipv6_monitor_enabled`：IPv6 变化监测是否可用（需要 `IPV6_MONITOR_ENABLED=1` 且 `ip_events_enabled=true`）。
+      - `ip_events_contract_version`：当前上报契约版本。
+      - `runtime_metrics`：当前进程运行指标（用于排障：上报成功率、最近错误、监测 tick）。
   - `POST /changeip`
     - 仅当 `CHANGEIP_ENABLED=1` 时可用；否则返回 `403`。
     - 请求头：`Content-Type: application/json`
@@ -120,6 +142,15 @@ apt install -y nodejs
     - 校验规则：
       - `token` 字段必须等于环境变量 `AUTH_TOKEN`。
       - 不满足则返回 `403`。
+      - 事件流上报必须可用（`IP_EVENTS_ENABLED=1` 且 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN` 已配置），否则返回 `500 ip events not configured`。
+      - 若当前已有进行中的换 IP 会话，返回 `409`：
+        ```json
+        {
+          "ok": false,
+          "error": "change already in progress",
+          "op_id": "20260128T061500Z_cmhk_7f2c0f"
+        }
+        ```
       - `CHANGEIP_PROVIDER` 在启用 `/changeip` 时必须显式配置（`script` / `exec` / `http_flow`）。
       - `script` provider：要求 `CHANGEIP_SCRIPT` 为可读常规文件（绝对路径）。
       - `exec` provider：要求 `CHANGEIP_EXEC_COMMAND` 非空。
@@ -155,6 +186,14 @@ apt install -y nodejs
           "reboot_delay_minutes": 1
         }
         ```
+    - 重要说明：
+      - `/changeip` 返回 `ok=true` 仅表示“本次触发请求被接受且 provider 已启动/通过启动探测”。
+      - 最终是否换 IP 成功，以后续事件 `change_succeeded` / `change_no_change` / `change_failed` 为准。
+    - 资源防护（稳定性）：
+      - 服务端显式设置 HTTP 超时（`request=300s`、`headers=60s`、`keep-alive=5s`），降低慢连接长期占用风险。
+      - 上游 HTTP 响应读取存在大小上限：通用请求（IPv4/IPv6 获取、ip-events 上报）默认上限约 `1 MiB`，`http_flow` 请求默认上限约 `4 MiB`；超限会中断并记为失败。
+      - 上游若在响应体未完整前提前断开，会立即按失败处理（不等待超时）。
+      - 出站 HTTP 默认启用连接复用（keep-alive agent），减少高频请求下的握手与 CPU 开销。
 
 所有行为均由以下环境变量控制（通过 `/etc/default/changeip-http` 配置）：
 
@@ -171,40 +210,65 @@ apt install -y nodejs
 
 `http_flow` provider 会按 JSON 中的步骤顺序执行 HTTP 流程，适合“登录面板 + 依次点击按钮”这类换 IP 场景。
 
-- 推荐从示例文件开始改：`flows/ippanel.boil.network.sample.json`
+- 推荐从示例文件开始改：`flows/samples/ippanel.boil.network.sample.json`
+- 路径迁移提示：旧路径 `flows/ippanel.boil.network.sample.json` 已废弃，请改用 `flows/samples/ippanel.boil.network.sample.json`
+- 若你使用 boil 面板，建议同时阅读：`docs/BOIL_FLOW.md`
 - 支持步骤类型：
   - `request`：发送 HTTP 请求（支持 `json` / `form` / `body`）
+  - `wait_until`：按固定间隔轮询请求，直到断言通过或超时（`timeout_ms` 为硬超时）
   - `extract`：从响应中正则提取变量
   - `assert`：对响应/变量做断言
   - `sleep`：等待毫秒
   - `set`：设置流程变量（可从环境变量读取）
+- `request` 步骤支持 `allow_network_error: true`（适用于“最后一步触发后立即断网”的面板；该步网络错误会被视为可接受，不直接判失败）。
+- `request` 步骤支持 `retries` 与 `retry_delay_ms`（用于临时失败自动重试；当返回 `429` 且存在 `Retry-After` 头时，会优先按该头等待后再重试）。
+- 单次 `request` 响应体读取默认有大小保护（约 `4 MiB`），超限会立即失败，避免异常大页面占满内存。
+- `http_flow` 里的布尔字段必须写成 JSON 布尔值（`true/false`），不能写字符串（例如 `"true"`）。
+- `wait_until` 结构为：
+  - `request`：要轮询的请求对象（同 `request` 步骤字段）
+  - `assert`：判断条件（同 `assert` 步骤字段）
+  - `timeout_ms` / `interval_ms`：总超时与轮询间隔
+- `http_flow` 采用“启动探测窗口”（约 `1.5s`）：若在窗口内即失败，`/changeip` 会直接返回 `500`；若已通过窗口后在后台步骤失败，会记录日志并由后续 `change_*` 事件给出最终结果。
 - 支持变量模板：
   - `${var_name}`：引用 flow 内变量
   - `${ENV:VAR_NAME}`：引用系统环境变量（推荐用于账号密码）
 - 会自动维护 cookie 会话并跟随重定向（默认开启）。
+- flow 文件会在每次触发时按文件 `mtime/size` 做缓存校验并自动重编译；通常改完 flow 后无需重启服务。
 - flow 在执行前会先做编译期校验（JSON 结构、步骤字段、变量引用、正则/状态码格式），不合法会直接返回 `500`。
 
 建议不要把敏感账号密码明文写进 flow 文件，而是放到环境变量，再通过 `${ENV:...}` 引用。
 
-### 3.2 IPv4 监测与上报说明
+### 3.2 IPv4/IPv6 监测与上报说明
 
-当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**，若与“上次已成功上报的 IPv4”不同，则向 CarpoolNotifier 的内部接口上报一次（仅在变化时播报）。
+当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**；当 `IPV6_MONITOR_ENABLED=1` 时，会定期获取公网 **IPv6**。若与各自“上次已成功上报”的基线不同，则向 CarpoolNotifier 的内部接口上报一次（仅在变化时上报）。
 
 注意：
 
-- 为满足“只播报 IPv4”，本服务对公网 IP 获取与上报请求均强制使用 **IPv4 出站**（`family=4`）。
+- `/changeip` 会话收敛与 `change_*` 事件仍然只看 IPv4，IPv6 当前仅用于自然变化记录。
+- IPv4 检测请求强制 `family=4`，IPv6 检测请求强制 `family=6`。
+- 启动时会先做一次 IPv6 可达性探测；若暂不可用，会提示并继续后台重试（IPv4/IPv6 监测错误日志默认按 5 分钟节流输出）。
 - 若你设置了 `IP_MONITOR_ENABLED=1`，但未配置 `IP_EVENTS_ENDPOINT` 或 `IP_EVENTS_TOKEN`，监测不会生效；此时 `/info` 返回的 `ip_monitor_enabled` 也会为 `false`。
+- 若你设置了 `IPV6_MONITOR_ENABLED=1`，但未配置 `IP_EVENTS_ENDPOINT` 或 `IP_EVENTS_TOKEN`，监测同样不会生效；此时 `/info` 返回的 `ipv6_monitor_enabled` 会为 `false`。
 
 环境变量：
 
-- `IP_MONITOR_ENABLED`：`1/0`，启用/关闭监测上报
-- `IP_MONITOR_INTERVAL_SECONDS`：检测间隔秒数（默认 `60`）
+- `IP_MONITOR_ENABLED`：`1/0`，启用/关闭 IPv4 监测上报
+- `IP_MONITOR_INTERVAL_SECONDS`：IPv4/IPv6 监测间隔秒数（默认 `60`）
+- `IPV6_MONITOR_ENABLED`：`1/0`，启用/关闭 IPv6 监测上报（默认 `0`）
 - `IP_STATE_FILE`：状态文件路径（默认 `/var/lib/changeip-http/ip_state.json`）
+- `PENDING_CHANGE_FILE`：换 IP 会话状态文件路径（默认 `/var/lib/changeip-http/pending_change.json`）
 - `IP_EVENTS_ENABLED`：`1/0`，启用/关闭事件流上报（`POST /internal/ip-events`）
 - `IP_EVENTS_ENDPOINT`：CarpoolNotifier 上报地址（例如 `https://<worker>/internal/ip-events`）
 - `IP_EVENTS_TOKEN`：上报鉴权密钥（HTTP Header：`Authorization: Bearer <token>`）
+- `CHANGE_MONITOR_START_DELAY_SECONDS`：触发 provider 后延迟多久开始判定（默认 `30`；有重启时会叠加到预计重启后）
+- `CHANGE_MONITOR_INTERVAL_SECONDS`：换 IP 会话进行中的判定间隔（默认 `10`）
+- `CHANGE_MONITOR_TIMEOUT_SECONDS`：换 IP 会话超时（默认 `600`）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
 - `REPORT_CHANNEL`：播报目标（支持 `@channel_username` 或私有频道/超级群 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员）
+
+调度语义说明：
+
+- `IP_MONITOR_INTERVAL_SECONDS` 与 `CHANGE_MONITOR_INTERVAL_SECONDS` 是两条独立调度线，各自按自己的间隔运行，不会互相“取最小值”覆盖。
 
 ---
 
@@ -279,8 +343,9 @@ chmod +x install.sh uninstall.sh
      - 上报地址 `IP_EVENTS_ENDPOINT`（CarpoolNotifier 内部接口：`/internal/ip-events`）
      - 上报密钥 `IP_EVENTS_TOKEN`（留空则自动生成）
    - 是否启用 IPv4 变化监测（仅在变化时上报）
-   - 若启用 IPv4 变化监测：
+   - 若启用 IPv4 或 IPv6 变化监测：
      - 检测间隔秒数（默认 `60`）
+   - 是否启用 IPv6 变化监测（仅在变化时上报，默认关闭；监测间隔复用 IPv4 的 `IP_MONITOR_INTERVAL_SECONDS`）
 4. 创建环境配置文件：`/etc/default/changeip-http`
 5. 创建 systemd 服务：`/etc/systemd/system/changeip-http.service`
 6. 运行：
@@ -328,7 +393,7 @@ curl -X POST "http://127.0.0.1:8787/changeip" \
   -d '{"token":"<YOUR_TOKEN>"}'
 ```
 
-看到 `ok: true` 即代表服务工作正常；若返回里 `reboot_scheduled=true` 说明会重启，若 `reboot_scheduled=false` 则不会重启（注意这会触发实际的换 IP 逻辑，请谨慎测试）。
+看到 `ok: true` 代表本次触发已被接受；最终是否换 IP 成功需以后续 `change_*` 事件为准。若返回里 `reboot_scheduled=true` 说明会重启，`reboot_scheduled=false` 则不会重启（注意这会触发实际的换 IP 逻辑，请谨慎测试）。
 
 ---
 
@@ -382,13 +447,13 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
    - 通过后提示“已收到更换 IP 请求”；是否重启取决于该 VPS 的 `REBOOT_DELAY_MINUTES` 配置。
    - VPS 后台按 provider 执行换 IP 动作；若配置 `REBOOT_DELAY_MINUTES=1..15` 则会在设定时间后重启，`-1` 则不重启。
 
-> 说明：机器人也可以调用本服务的 `/info` 获取 `server_label` / `channel` / `notified_ipv4`，用于在频道内提前发布“即将换 IP”预告，并在同一条消息中持续更新进度。
+> 说明：机器人也可以调用本服务的 `/info` 获取 `server_label` / `channel` / `notified_ipv4` / `notified_ipv6`。当前 `notified_ipv6` 仅用于日志与排障，不参与 `/changeip` 成功判定；`runtime_metrics` 可用于快速定位“为什么最近没上报/上报失败”。
 
 > 安全建议：
 > - 尽量只在内网或受控网络中开放该端口（如通过防火墙限制来源 IP）。
 > - `AUTH_TOKEN` 要足够随机且保密，只在 CarpoolNotifier 环境变量和安装日志（你自己留存）中使用。
 
-### 6.1 IPv4 自动播报对接
+### 6.1 IP 事件流对接（IPv4 播报 + IPv6 记录）
 
 `ip-changer` 会向 CarpoolNotifier 的内部接口上报事件流（自然变化 + 换 IP 状态），因此你需要在 Cloudflare Worker 中配置密钥：
 
@@ -397,8 +462,12 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 并确保 Worker 中已实现内部路由：
 
 - `POST /internal/ip-events`（鉴权：`Authorization: Bearer <IP_EVENTS_TOKEN>`）
+  - 事件体会自动携带 `contract_version`（当前 `2026-02-28.v1`）
 
-随后，当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会自动播报到 `REPORT_CHANNEL`（若设置），并通知管理员。
+随后：
+
+- 当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会按既有逻辑播报/通知。
+- 当 VPS 公网 IPv6 发生变化时，CarpoolNotifier 仅写入 `iplog` 事件日志，不做额外播报。
 
 ---
 
@@ -429,6 +498,10 @@ systemctl restart changeip-http
   - `REBOOT_DELAY_MINUTES`
   - `IP_MONITOR_ENABLED`
   - `IP_MONITOR_INTERVAL_SECONDS`
+  - `IPV6_MONITOR_ENABLED`
+  - `CHANGE_MONITOR_START_DELAY_SECONDS`
+  - `CHANGE_MONITOR_INTERVAL_SECONDS`
+  - `CHANGE_MONITOR_TIMEOUT_SECONDS`
   - `IP_EVENTS_ENABLED`
   - `IP_EVENTS_ENDPOINT`
   - `IP_EVENTS_TOKEN`
@@ -452,13 +525,30 @@ node scripts/changeip_regression.js
 
 当前覆盖点：
 
+- quick cases（运行器级）：
+  - 监测调度：pending 超时后的重试时间按 `CHANGE_MONITOR_INTERVAL_SECONDS` 回退（不立即重试）
+  - 监测调度：pending 超时且终态事件上报失败时，超时未收敛告警按窗口节流（避免刷屏）
+  - 监测调度：pending 会话存在时暂停自然监测调度（避免 busy loop）
+  - IPv4/IPv6 监测：错误日志按窗口节流，并在恢复后仅记录一次 recovered 日志
+  - 配置解析：IPv6 监测开关生效且复用 `IP_MONITOR_INTERVAL_SECONDS`，并验证 `ipv6` 自然事件 op_id 后缀格式
+  - 事件契约：`event` 枚举与必填字段按 `src/contracts/ipEvents.js` 校验
+  - `wait_until` 硬超时（请求耗时超过 deadline 必须失败）
+  - `request` 重试收敛（按 `retries/retry_delay_ms` 成功）
+  - `429 Retry-After` 优先等待策略
+  - 上游提前断连（truncated response）快速失败路径（通用网络层与 `http_flow`）
+  - `ip-events` 终态事件短重试（`change_*` 在瞬时 5xx 下会快速重试；自然事件保持单次上报）
+  - 会话状态持久化失败可观测（`pending_change` 不可写时会显式返回持久化失败）
 - 并发请求 `/changeip`（`script` 与 `exec` provider）：只允许 1 个成功，其余返回 `409`
 - `CHANGEIP_SCRIPT` 相对路径：返回 `500 changeip script path must be absolute`
 - `CHANGEIP_SCRIPT` 非常规文件：返回 `500 changeip script is not a regular file`
-- 脚本快速异常退出：返回 `500 changeip script exited early`，并确认不会残留/复活 `pending_change.json`
-- `exec` 命令快速异常退出：返回 `500 changeip exec command exited early`，并确认不会残留/复活 `pending_change.json`
+- 脚本快速异常退出：返回 `500 changeip script exited early`，在 `ip-events` 可达时会及时清理 `pending_change.json`
+- `exec` 命令快速异常退出：返回 `500 changeip exec command exited early`，在 `ip-events` 可达时会及时清理 `pending_change.json`
+- 脚本快速异常退出 + 首次 `change_failed` 上报被拒：会保留 `pending_change.json` 并由监测循环重试同一终态，成功后再清理
+- 旧/不完整 `pending_change.json`：不会做兼容补全；会先尝试上报 `change_failed(invalid_pending_*)`，成功后清理（若上报不可达则保留并重试）；若缺少可用 `op_id` 则直接清理
 - `http_flow` provider：验证“登录 + 重定向 + 触发动作”流程（含 cookie 会话与变量提取）
 - `http_flow` provider：验证编译期校验（未知变量引用会在执行前直接拒绝）
+- `ip-events` 返回 `500`：验证“已超时 pending 会话”会持续重试并记录 stuck alert 指标
+- `ip-events` 请求超时：验证“已超时 pending 会话”在网络慢/超时下同样可观测并保持会话不丢失
 
 ---
 
@@ -472,7 +562,7 @@ node scripts/changeip_regression.js
   ```bash
   AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_PROVIDER=script CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=1 \
   IP_EVENTS_ENABLED=1 IP_EVENTS_ENDPOINT=... IP_EVENTS_TOKEN=... \
-  IP_MONITOR_ENABLED=1 IP_MONITOR_INTERVAL_SECONDS=60 SERVER_LABEL=... REPORT_CHANNEL=@... \
+  IP_MONITOR_ENABLED=1 IP_MONITOR_INTERVAL_SECONDS=60 IPV6_MONITOR_ENABLED=0 SERVER_LABEL=... REPORT_CHANNEL=@... \
   node changeip_http_server.js
   ```
   即可启动服务，但不具备开机自启与守护功能。

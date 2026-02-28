@@ -15,6 +15,7 @@
 - 每台 VPS 必须设置唯一且稳定的 `SERVER_LABEL`（例如 `CMHK` / `HKT` / `iCable`）。
 - CarpoolNotifier 以 `server_label` 作为主键存储：
   - 上次 IPv4
+  - 上次 IPv6（仅日志/排障用途）
   - 正在进行的换 IP 会话（用于编辑同一条频道播报）
   - 频道消息的 message_id 等
 
@@ -37,7 +38,7 @@
 
 ### 2.1 `/changeip` 触发（可选）
 
-前提：VPS 上 `CHANGEIP_ENABLED=1` 且已配置 `CHANGEIP_PROVIDER`。
+前提：VPS 上 `CHANGEIP_ENABLED=1`、已配置 `CHANGEIP_PROVIDER`，且 ip-events 上报已启用（`IP_EVENTS_ENABLED=1` + endpoint/token）。
 
 CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容）：
 
@@ -58,6 +59,7 @@ CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容
 说明：
 
 - 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，provider 触发仍会执行，但**不会**执行重启。
+- 若该 VPS 已有进行中的换 IP 会话，`/changeip` 会返回 `409 change already in progress`，并携带现有 `op_id`（CarpoolNotifier 应按“已在进行中”处理，而不是重复触发）。
 
 ### 2.2 `/info` 查询
 
@@ -67,6 +69,9 @@ CarpoolNotifier 用它来获取：
 - `channel`
 - `changeip_provider`
 - `notified_ipv4`（用于“预告/开始”文案里的基线 IP）
+- `notified_ipv6`（用于日志与排障；不参与 `/changeip` 会话判定）
+- `ip_events_contract_version`（当前事件契约版本）
+- `runtime_metrics`（上报成功率、最近错误、监测 tick 等运行指标）
 
 请求：
 
@@ -99,6 +104,7 @@ VPS 侧配置：
 与 `IP_MONITOR_*` 的关系：
 
 - `IP_MONITOR_ENABLED=1`：启用“自然变化”监测，但上报事件改为 `ipv4_changed`（仍然只在变化时上报）
+- `IPV6_MONITOR_ENABLED=1`：启用 IPv6 自然变化监测，上报事件为 `ipv6_changed`（仅记录到 iplog，不做额外播报）
 - “换 IP 会话”的状态上报使用 `change_*` 事件，即使最终 IP 没变也要上报 `change_no_change`/`change_failed`
 
 重要建议：
@@ -108,10 +114,16 @@ VPS 侧配置：
 
 判定规则（v1，与你确认的口径一致）：
 
-- provider 成功触发后立刻上报 `change_started`
+- provider 成功触发后会尽快上报 `change_started`（若瞬时上报失败，监测流程会按 pending 会话补发）
+- provider 启动探测失败时会上报 `change_failed`；若首次上报失败，会保留 pending 会话并重试同一 `change_failed`（`reason` 不变）
+- `change_*` 终态事件上报带短重试（最多 3 次，带退避抖动）；`ipv4_changed/ipv6_changed` 自然事件保持单次上报
+- 若 `pending_change` 字段不合法，会尝试上报 `change_failed(invalid_pending_*)`，成功后清理会话
+- 若 `pending_change` 缺少可用 `op_id`，会直接清理会话（因为无法构造合法 `change_failed` 事件）
+- `/changeip` 会话终态判定只看 IPv4；IPv6 不参与 `change_*` 语义
 - 触发后等待 `CHANGE_MONITOR_START_DELAY_SECONDS` 再尝试获取公网 IPv4
   - 若设置了重启延迟（`REBOOT_DELAY_MINUTES=1..15`），则会在“预计重启时间”之后再加上该延迟，避免在重启前误判为 `change_no_change`
 - 获取到合法公网 IPv4 后即可判定终态：
+  - `old_ipv4` 缺失 → `change_failed`（`old_ipv4_unknown`）
   - `!= old_ipv4` → `change_succeeded`
   - `== old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
@@ -122,8 +134,9 @@ VPS 侧配置：
 
 - `op_id` 是“一次换 IP 操作”的唯一标识，建议把它视为该次换 IP 的“会话/操作 ID”。
 - `POST /changeip` 成功返回体里必须包含 `op_id`，并且后续所有 `change_*` 事件都要带相同 `op_id`。
+- `POST /changeip` 的 `ok=true` 仅表示触发已接受；最终成功/失败以后续 `change_*` 终态事件为准。
 
-### B2.3 上报 payload
+### 3.3 上报 payload
 
 最小必需字段：
 
@@ -133,21 +146,26 @@ VPS 侧配置：
   "channel": "-1001234567890",
   "op_id": "20260128T061500Z_cmhk_7f2c0f",
   "ts": "2026-01-28T06:15:00.000Z",
+  "contract_version": "2026-02-28.v1",
   "event": "change_started"
 }
 ```
 
 事件类型与可选字段见本仓库：`docs/SPEC.md`。
 
+代码契约（与文档同步维护）：
+
+- `src/contracts/ipEvents.js`：事件枚举、`contract_version`、每种事件的必填字段、payload 基础校验
+
 ## 4. 典型流程
 
-### 4.1 自然 IPv4 变化
+### 4.1 自然 IP 变化
 
-1. `ip-changer` 发现 IPv4 变化
-2. `ip-changer` 调用 Worker `/internal/ip-events`（`event=ipv4_changed`）
+1. `ip-changer` 发现 IPv4 或 IPv6 变化
+2. `ip-changer` 调用 Worker `/internal/ip-events`（`event=ipv4_changed` 或 `event=ipv6_changed`）
 3. CarpoolNotifier：
-   - 若当前存在“换 IP 会话”，则编辑会话消息并追加频道行
-   - 否则向频道 + 管理员广播一条“公网 IP 变化”消息，并（可选）进入锁定期防止重复触发
+   - `ipv4_changed`：保留现有行为（会话编辑/频道与管理员通知/冷却锁）
+   - `ipv6_changed`：仅记录到 `iplog` 事件日志，不触发额外广播
 
 ### 4.2 机器人触发换 IP（provider + 可选重启）
 

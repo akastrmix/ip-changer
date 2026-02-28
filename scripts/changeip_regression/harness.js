@@ -139,7 +139,11 @@ async function startEventSink({ delayMs = 0 } = {}) {
   };
 }
 
-async function startHttpFlowMockPanel({ username = 'demo-user', password = 'demo-pass' } = {}) {
+async function startHttpFlowMockPanel({
+  username = 'demo-user',
+  password = 'demo-pass',
+  dropOnChange = false
+} = {}) {
   const calls = [];
   const csrfToken = 'csrf-token-123';
   const server = http.createServer((req, res) => {
@@ -198,6 +202,116 @@ async function startHttpFlowMockPanel({ username = 'demo-user', password = 'demo
           res.end('forbidden');
           return;
         }
+        if (dropOnChange) {
+          req.socket.destroy();
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.end('{"ok":true}');
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end('not found');
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  return {
+    port,
+    calls,
+    close: () => new Promise((resolve) => server.close(() => resolve()))
+  };
+}
+
+async function startHttpFlowResilienceMock({
+  retryFailCount = 2,
+  progressReadyAfter = 3
+} = {}) {
+  const calls = {
+    retryReady: 0,
+    progress: 0
+  };
+
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      if (req.method === 'POST' && req.url === '/retry-ready') {
+        calls.retryReady += 1;
+        if (calls.retryReady <= retryFailCount) {
+          res.statusCode = 500;
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.end('{"ok":false,"stage":"retry"}');
+          return;
+        }
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.end('{"ok":true,"stage":"retry"}');
+        return;
+      }
+
+      if (req.method === 'POST' && req.url === '/progress') {
+        calls.progress += 1;
+        const ready = calls.progress >= progressReadyAfter;
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ state: ready ? 'ready' : 'pending', n: calls.progress }));
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end('not found');
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : 0;
+  return {
+    port,
+    calls,
+    close: () => new Promise((resolve) => server.close(() => resolve()))
+  };
+}
+
+async function startHttpFlowRetryAfterMock({
+  retryAfterSeconds = 1,
+  failCount = 1
+} = {}) {
+  const calls = {
+    total: 0,
+    firstLimitedAt: 0,
+    firstSuccessAt: 0
+  };
+
+  const server = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => {
+      if (req.method === 'POST' && req.url === '/retry-after') {
+        calls.total += 1;
+        if (calls.total <= failCount) {
+          if (!calls.firstLimitedAt) calls.firstLimitedAt = Date.now();
+          res.statusCode = 429;
+          res.setHeader('retry-after', String(retryAfterSeconds));
+          res.setHeader('content-type', 'application/json; charset=utf-8');
+          res.end('{"ok":false,"reason":"rate_limited"}');
+          return;
+        }
+
+        if (!calls.firstSuccessAt) calls.firstSuccessAt = Date.now();
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json; charset=utf-8');
         res.end('{"ok":true}');
@@ -343,6 +457,15 @@ async function postChangeIp(port) {
   });
 }
 
+async function postInfo(port) {
+  return httpRequest({
+    port,
+    method: 'POST',
+    pathname: '/info',
+    body: { token: AUTH_TOKEN }
+  });
+}
+
 async function runWithServer(env, fn) {
   const { proc, logs } = await startIpChanger(env);
   try {
@@ -362,10 +485,14 @@ module.exports = {
   log,
   makeCaseFiles,
   postChangeIp,
+  postInfo,
   runWithServer,
   sleep,
   startEventSink,
   startHttpFlowMockPanel,
+  startHttpFlowResilienceMock,
+  startHttpFlowRetryAfterMock,
   startIpChangerExpectConfigError,
+  waitUntil,
   writeShellScript
 };

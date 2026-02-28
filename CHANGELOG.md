@@ -4,6 +4,14 @@
 
 ## Unreleased
 
+- 重构：`src/` 目录按领域收敛为 `change/`、`monitor/`、`network/`、`contracts/`、`ip/`、`runtime/`，并补充模块地图 `docs/ARCHITECTURE.md`。
+- 强化：新增“超时 pending 会话 + ip-events 500/超时”故障注入回归用例，确保会话持续重试且 `pending_timeout_stuck_alerts_total` 指标可观测。
+- 新增：可选 IPv6 自然变化监测（`IPV6_MONITOR_ENABLED`，监测间隔复用 `IP_MONITOR_INTERVAL_SECONDS`），上报 `event=ipv6_changed`，并在 `/info` 返回 `notified_ipv6` / `ipv6_monitor_enabled`。
+- 语义保持：`/changeip` 会话判定与 `change_*` 事件仍只基于 IPv4。
+- 优化：IPv6 检测源改为优先 IPv6 专用入口（`api6.ipify.org` 等），并增加启动可达性探测与错误日志节流（默认 5 分钟）以降低噪音。
+- 重构：监测模块拆分为 `src/monitor/` 子模块（pending/natural/scheduler/helpers），并统一自然 IPv4/IPv6 监测执行器，降低重复分支。
+- 重构：`http_flow` 编译器拆分为 `src/providers/httpFlow/compile/*` 子模块（shared/steps/flow），`compile.js` 保持兼容入口。
+- 新增：事件契约模块 `src/contracts/ipEvents.js`，统一 `event` 枚举与必填字段校验；上报前会做本地契约校验。
 - 修复：`/changeip` 先持久化 `pending_change` 再进入异步流程，消除“基线未初始化时并发触发多次脚本”的竞态窗口。
 - 修复：`change_started` 上报改为按 `op_id` 回读并更新 pending，避免 spawn 失败后旧异步回调把 pending 写回（状态复活）。
 - 新增：`/changeip` provider 架构（`CHANGEIP_PROVIDER=script|exec|http_flow`），并拆分到 `src/providers/` 模块。
@@ -13,9 +21,17 @@
 - 强化：新增脚本早退检测（启动后短时间内非 0/信号退出直接判失败），`/changeip` 返回 `500 changeip script exited early` 并上报 `change_failed`。
 - 新增：`scripts/changeip_regression.js` 零依赖回归脚本，覆盖 `/changeip` 并发与关键失败路径（含 `exec` provider 并发用例）。
 - 新增：`http_flow` provider 可用（flow JSON 执行器，支持 cookie、重定向、变量模板、提取与断言步骤）。
-- 新增：示例 flow 文件 `flows/ippanel.boil.network.sample.json`。
+- 新增：示例 flow 文件 `flows/samples/ippanel.boil.network.sample.json`。
 - 新增：回归脚本 `http_flow` 用例，覆盖“登录 + 重定向 + 触发动作”链路。
-- 重构：抽离 `src/changeSession.js`，统一 `pending_change` 会话状态迁移与 `change_*` 事件构造/发送逻辑。
+- 新增：`http_flow` `request` 步骤支持 `allow_network_error=true`，用于“触发后立即断网”的末步动作场景。
+- 新增：`http_flow` `request` 步骤支持 `retries/retry_delay_ms`，并新增 `wait_until` 轮询步骤用于慢页面收敛。
+- 新增：`http_flow` 重试在收到 `429` + `Retry-After` 时会优先按服务端建议等待，降低限流放大风险。
+- 调整：统一 provider 启动语义为“通过启动探测即视为已触发”，`http_flow` 改为后台执行并在启动探测窗口内失败时返回 `500`。
+- 优化：新增 `detachedCommandProvider` 工厂，合并 `script/exec` provider 重复启动逻辑。
+- 优化：`http_flow` 增加按文件 `mtime/size` 的编译缓存，减少重复编译开销。
+- 文档：新增 `docs/BOIL_FLOW.md`（boil 面板专用 flow 配置/映射/排障说明），并在 README/RUNBOOK 增加入口。
+- 文档：补齐 `/changeip` 关键语义（`ok=true` 仅表示触发已接受、`409 in-progress`、`ip-events` 依赖）与 `pending_change` 状态文件说明，降低新会话接手成本。
+- 重构：抽离 `src/change/session.js`，统一 `pending_change` 会话状态迁移与 `change_*` 事件构造/发送逻辑。
 - 重构：统一 provider 错误模型（稳定 `provider_error_code`），降低上层分支判断复杂度。
 - 重构：回归测试拆分为 `scripts/changeip_regression/harness.js` + `scripts/changeip_regression/cases.js`，便于后续按 provider 扩展用例。
 - 重构：`http_flow` provider 拆分为编译/模板/http/cookie/运行时模块，降低单文件复杂度。

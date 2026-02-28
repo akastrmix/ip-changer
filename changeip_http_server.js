@@ -1,4 +1,4 @@
-// ip-changer (VPS): minimal HTTP server + optional changeip trigger + IPv4 monitor (IPv4-only)
+// ip-changer (VPS): minimal HTTP server + optional changeip trigger + IPv4/IPv6 monitor
 // - No third-party NPM deps; Node.js standard library only.
 //
 // Endpoints:
@@ -10,8 +10,17 @@ const http = require('http');
 
 const { loadConfigFromEnv, safeTokenEquals } = require('./src/config');
 const { loadIpState } = require('./src/state');
-const { triggerChangeIp } = require('./src/changeip');
+const { triggerChangeIp } = require('./src/change/trigger');
 const { startMonitor } = require('./src/monitor');
+const { getRuntimeMetricsSnapshot } = require('./src/runtime/metrics');
+const {
+  IP_EVENTS_CONTRACT_VERSION,
+  SUPPORTED_IP_EVENTS_CONTRACT_VERSIONS
+} = require('./src/contracts/ipEvents');
+
+const SERVER_REQUEST_TIMEOUT_MS = 300 * 1000;
+const SERVER_HEADERS_TIMEOUT_MS = 60 * 1000;
+const SERVER_KEEP_ALIVE_TIMEOUT_MS = 5 * 1000;
 
 let config;
 try {
@@ -84,7 +93,12 @@ function handleInfo(req, res) {
       changeip_provider: config.changeipEnabled ? config.changeipProvider : null,
       ip_events_enabled: config.ipEventsActive,
       ip_monitor_enabled: config.ipMonitorEnabled && config.ipEventsActive,
-      notified_ipv4: state.notified_ipv4 || null
+      ipv6_monitor_enabled: config.ipv6MonitorEnabled && config.ipEventsActive,
+      ip_events_contract_version: IP_EVENTS_CONTRACT_VERSION,
+      ip_events_contract_versions_supported: SUPPORTED_IP_EVENTS_CONTRACT_VERSIONS,
+      notified_ipv4: state.notified_ipv4 || null,
+      notified_ipv6: state.notified_ipv6 || null,
+      runtime_metrics: getRuntimeMetricsSnapshot()
     });
   });
 }
@@ -128,6 +142,9 @@ function handleRequest(req, res) {
 }
 
 const server = http.createServer(handleRequest);
+server.requestTimeout = SERVER_REQUEST_TIMEOUT_MS;
+server.keepAliveTimeout = SERVER_KEEP_ALIVE_TIMEOUT_MS;
+server.headersTimeout = Math.max(SERVER_HEADERS_TIMEOUT_MS, SERVER_KEEP_ALIVE_TIMEOUT_MS + 1000);
 
 server.listen(config.port, '0.0.0.0', () => {
   console.log(`[changeip-http] listening on 0.0.0.0:${config.port}`);
@@ -136,6 +153,9 @@ server.listen(config.port, '0.0.0.0', () => {
   }
   if (config.ipMonitorEnabled) {
     console.log(`[changeip-http] ipv4 monitor enabled: interval=${config.ipMonitorIntervalSeconds}s`);
+  }
+  if (config.ipv6MonitorEnabled) {
+    console.log(`[changeip-http] ipv6 monitor enabled: interval=${config.ipMonitorIntervalSeconds}s (shared with ipv4)`);
   }
   if (config.changeipEnabled) {
     console.log(`[changeip-http] /changeip enabled: provider=${config.changeipProvider}`);

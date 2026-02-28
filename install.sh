@@ -189,10 +189,21 @@ if [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
 fi
 
 IP_MONITOR_INTERVAL_SECONDS=""
+read -rp "是否启用公网 IPv6 变化监测并上报到 CarpoolNotifier? [y/N]: " IPV6_MONITOR_ENABLED_INPUT
+IPV6_MONITOR_ENABLED_INPUT="${IPV6_MONITOR_ENABLED_INPUT:-N}"
+IPV6_MONITOR_ENABLED=0
+case "$(echo "$IPV6_MONITOR_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
+  y|yes|1) IPV6_MONITOR_ENABLED=1 ;;
+esac
+
+if [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
+  IPV6_MONITOR_ENABLED=0
+fi
+
 IP_STATE_FILE="/var/lib/changeip-http/ip_state.json"
 
-if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
-  IP_MONITOR_INTERVAL_SECONDS="$(prompt_int "监测间隔（秒）" "60" "10" "86400")"
+if [ "$IP_MONITOR_ENABLED" -eq 1 ] || [ "$IPV6_MONITOR_ENABLED" -eq 1 ]; then
+  IP_MONITOR_INTERVAL_SECONDS="$(prompt_int "IPv4/IPv6 监测间隔（秒）" "60" "10" "86400")"
 fi
 
 ENV_FILE="/etc/default/changeip-http"
@@ -235,13 +246,24 @@ if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
   } >>"$ENV_FILE"
 fi
 
-if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
+if [ "$IP_MONITOR_ENABLED" -eq 1 ] || [ "$IPV6_MONITOR_ENABLED" -eq 1 ]; then
   mkdir -p "$(dirname "$IP_STATE_FILE")"
   chmod 700 "$(dirname "$IP_STATE_FILE")" || true
   {
-    printf 'IP_MONITOR_ENABLED=%s\n' "$(env_quote "1")"
     printf 'IP_MONITOR_INTERVAL_SECONDS=%s\n' "$(env_quote "$IP_MONITOR_INTERVAL_SECONDS")"
     printf 'IP_STATE_FILE=%s\n' "$(env_quote "$IP_STATE_FILE")"
+  } >>"$ENV_FILE"
+fi
+
+if [ "$IP_MONITOR_ENABLED" -eq 1 ]; then
+  {
+    printf 'IP_MONITOR_ENABLED=%s\n' "$(env_quote "1")"
+  } >>"$ENV_FILE"
+fi
+
+if [ "$IPV6_MONITOR_ENABLED" -eq 1 ]; then
+  {
+    printf 'IPV6_MONITOR_ENABLED=%s\n' "$(env_quote "1")"
   } >>"$ENV_FILE"
 fi
 
@@ -309,6 +331,12 @@ if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
     echo "IP_MONITOR_INTERVAL_SECONDS: $IP_MONITOR_INTERVAL_SECONDS"
   else
     echo "未启用 IPv4 变化监测"
+  fi
+  if [ "$IPV6_MONITOR_ENABLED" -eq 1 ]; then
+    echo "已启用 IPv6 变化监测（仅在变化时上报）"
+    echo "IPV6 监测间隔复用 IP_MONITOR_INTERVAL_SECONDS: $IP_MONITOR_INTERVAL_SECONDS"
+  else
+    echo "未启用 IPv6 变化监测"
   fi
 else
   echo "未启用 ip-events 上报"

@@ -21,22 +21,63 @@ function loadJsonFile(filePath) {
   }
 }
 
+function fsyncDirBestEffort(dirPath) {
+  let dirFd = null;
+  try {
+    dirFd = fs.openSync(dirPath, 'r');
+    fs.fsyncSync(dirFd);
+  } catch {
+    // ignore: some filesystems do not allow directory fsync
+  } finally {
+    if (dirFd !== null) {
+      try {
+        fs.closeSync(dirFd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
 function saveJsonFileAtomic(filePath, obj) {
+  const tmp = `${filePath}.tmp`;
   try {
     ensureDirFor(filePath);
-    const tmp = `${filePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(obj));
+
+    const fd = fs.openSync(tmp, 'w');
+    try {
+      fs.writeFileSync(fd, JSON.stringify(obj), 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+
     fs.renameSync(tmp, filePath);
+    fsyncDirBestEffort(path.dirname(filePath));
+    return { ok: true, error: '' };
   } catch (err) {
-    console.error('[changeip-http] failed to save state:', String(err));
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // ignore
+    }
+    const error = String(err);
+    console.error('[changeip-http] failed to save state:', error);
+    return { ok: false, error };
   }
 }
 
 function deleteFile(filePath) {
   try {
     fs.unlinkSync(filePath);
-  } catch {
-    // ignore
+    return { ok: true, error: '' };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { ok: true, error: '' };
+    }
+    const error = String(err);
+    console.error('[changeip-http] failed to delete state file:', error);
+    return { ok: false, error };
   }
 }
 
@@ -45,7 +86,7 @@ function loadIpState(config) {
 }
 
 function saveIpState(config, state) {
-  saveJsonFileAtomic(config.ipStateFile, state || {});
+  return saveJsonFileAtomic(config.ipStateFile, state || {});
 }
 
 function loadPendingChange(config) {
@@ -54,11 +95,11 @@ function loadPendingChange(config) {
 }
 
 function savePendingChange(config, pending) {
-  saveJsonFileAtomic(config.pendingChangeFile, pending || {});
+  return saveJsonFileAtomic(config.pendingChangeFile, pending || {});
 }
 
 function clearPendingChange(config) {
-  deleteFile(config.pendingChangeFile);
+  return deleteFile(config.pendingChangeFile);
 }
 
 module.exports = {
@@ -68,4 +109,3 @@ module.exports = {
   savePendingChange,
   clearPendingChange
 };
-

@@ -1,4 +1,4 @@
-const { requestText } = require('./http');
+const { requestText } = require('../network/http');
 
 function isValidIpv4(value) {
   const ip = String(value || '').trim();

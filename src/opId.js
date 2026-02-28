@@ -31,7 +31,14 @@ function makeIpv4OpId(serverLabel, date = new Date()) {
   return `${ts}_${label}_ipv4_${randomSuffixHex(6)}`;
 }
 
+function makeIpv6OpId(serverLabel, date = new Date()) {
+  const ts = formatUtcCompact(date);
+  const label = normalizeLabel(serverLabel);
+  return `${ts}_${label}_ipv6_${randomSuffixHex(6)}`;
+}
+
 module.exports = {
   makeChangeOpId,
-  makeIpv4OpId
+  makeIpv4OpId,
+  makeIpv6OpId
 };

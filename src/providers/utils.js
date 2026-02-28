@@ -67,6 +67,53 @@ function waitForStableStart(proc, {
     const timer = setTimeout(() => finish({ ok: true, exitedEarly: false }), Math.max(graceMs, 0));
     proc.once('error', onError);
     proc.once('exit', onExit);
+
+    // Handle the fast-exit race: process may exit before listeners are attached.
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      onExit(proc.exitCode, proc.signalCode);
+    }
+  });
+}
+
+function probeAsyncTaskStart(taskPromise, {
+  graceMs = 1500,
+  onLateError = null
+} = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let gracePassed = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    Promise.resolve(taskPromise).then(
+      () => {
+        if (gracePassed) return;
+        finish({ ok: true, completedInGrace: true });
+      },
+      (err) => {
+        const detail = String(err && err.message ? err.message : err);
+        if (!gracePassed) {
+          finish({ ok: false, detail });
+          return;
+        }
+        if (typeof onLateError === 'function') {
+          try {
+            onLateError(err);
+          } catch {
+            // ignore error from late error hook
+          }
+        }
+      }
+    );
+
+    const timer = setTimeout(() => {
+      gracePassed = true;
+      finish({ ok: true, completedInGrace: false });
+    }, Math.max(graceMs, 0));
   });
 }
 
@@ -99,6 +146,7 @@ async function spawnDetachedAndProbe({
 
 module.exports = {
   ensureAbsolutePath,
+  probeAsyncTaskStart,
   validateReadableRegularFile,
   spawnDetachedAndProbe
 };

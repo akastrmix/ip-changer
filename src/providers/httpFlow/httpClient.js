@@ -2,7 +2,25 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 
+const { normalizeMaxResponseBytes, readResponseText } = require('../../network/responseText');
 const { buildCookieHeader, saveCookies } = require('./cookies');
+
+const HTTP_KEEPALIVE_AGENT = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  maxSockets: 16,
+  maxFreeSockets: 4,
+  timeout: 60 * 1000
+});
+const HTTPS_KEEPALIVE_AGENT = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+  maxSockets: 16,
+  maxFreeSockets: 4,
+  timeout: 60 * 1000
+});
+
+const DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 function hasHeader(headers, name) {
   const key = String(name || '').toLowerCase();
@@ -44,24 +62,24 @@ function nextMethodForRedirect(status, method) {
   return m;
 }
 
-function requestOnce({ urlObj, method, headers, body, timeoutMs }) {
+function requestOnce({ urlObj, method, headers, body, timeoutMs, maxResponseBytes }) {
   return new Promise((resolve, reject) => {
     const lib = urlObj.protocol === 'https:' ? https : http;
+    const maxBytes = normalizeMaxResponseBytes(maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES);
     const req = lib.request(urlObj, {
       method,
       headers,
-      timeout: timeoutMs
+      timeout: timeoutMs,
+      agent: urlObj.protocol === 'https:' ? HTTPS_KEEPALIVE_AGENT : HTTP_KEEPALIVE_AGENT
     }, (res) => {
-      const chunks = [];
-      res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () => {
+      readResponseText(res, maxBytes).then((bodyText) => {
         resolve({
           status: res.statusCode || 0,
           headers: res.headers || {},
-          body: Buffer.concat(chunks).toString('utf8'),
+          body: bodyText,
           url: new URL(urlObj.toString())
         });
-      });
+      }, reject);
     });
     req.on('timeout', () => req.destroy(new Error('request timeout')));
     req.on('error', reject);
@@ -79,7 +97,8 @@ async function requestWithRedirects({
   followRedirects,
   maxRedirects,
   cookieJar,
-  userAgent
+  userAgent,
+  maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES
 }) {
   let currentUrl = new URL(urlObj.toString());
   let currentMethod = String(method || 'GET').toUpperCase();
@@ -104,7 +123,8 @@ async function requestWithRedirects({
       method: currentMethod,
       headers: requestHeaders,
       body: currentBody,
-      timeoutMs
+      timeoutMs,
+      maxResponseBytes
     });
     saveCookies(cookieJar, currentUrl, response.headers);
 
