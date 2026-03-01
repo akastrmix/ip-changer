@@ -71,7 +71,16 @@ function readJsonBody(req, res, { maxBytes = 1024 } = {}) {
       resolve(parsed && typeof parsed === 'object' ? parsed : {});
     });
 
-    req.on('error', () => resolve(null));
+    req.on('error', () => {
+      if (responded) return resolve(null);
+      responded = true;
+      try {
+        jsonResponse(res, 400, { ok: false, error: 'request error' });
+      } catch {
+        // ignore: connection may already be closed
+      }
+      resolve(null);
+    });
   });
 }
 
@@ -114,7 +123,8 @@ function handleChangeIp(req, res) {
 
     let result;
     try {
-      result = await triggerChangeIp(config);
+      const force = parsed && parsed.force === true;
+      result = await triggerChangeIp(config, { force });
     } catch (err) {
       console.error('[changeip-http] /changeip error:', String(err));
       result = { status: 500, body: { ok: false, error: 'internal_error' } };

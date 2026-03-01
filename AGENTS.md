@@ -16,10 +16,22 @@
   - 不可改动系统其它模块（系统包、sysctl、全局 cron 等）。
 - 语义边界：
   - IPv6 仅用于自然变化记录（`ipv6_changed`），`/changeip` 会话收敛仍只看 IPv4。
-  - `/changeip` 的 `ok=true` 仅表示“已触发 provider”，最终结果以 `change_*` 事件为准。
+  - `/changeip` 的 `ok=true` 仅表示“触发已接受且会话已落盘，provider 启动已异步调度”，最终结果以 `change_*` 事件为准。
 - 契约稳定：
   - `GET /`、`POST /info`、`POST /changeip` 与 ip-events 字段语义应尽量保持稳定。
   - 必要变更时必须同步更新 `docs/SPEC.md`、`docs/INTEGRATION.md` 与 CarpoolNotifier 对接端。
+- 跨仓库联动（重要）：
+  - 当你改动以下任一项，必须同时 review/修改 **CarpoolNotifier**（代码 + 文档 + 回归），否则大概率“单边改动导致线上卡死/不播报/误告警”：
+    - `/changeip` 或 `/info` 的返回字段/语义/错误码/鉴权（含 `ok`/`op_id`/`provider_error_code`/`ip_events_contract_version` 等）
+    - ip-events：`contract_version`、事件枚举、必填字段、幂等键（`server_label + op_id + event`）与乱序/终态优先规则
+    - `change_failed.reason` 列表或语义（会影响 bot 文案与告警分流）
+    - `REPORT_CHANNEL` “允许为空=禁用频道播报”的语义
+  - 快速定位（对接文件）：
+    - 本仓库：`docs/SPEC.md`、`docs/INTEGRATION.md`、`src/contracts/ipEvents.js`
+    - CarpoolNotifier：`docs/IP_CHANGER.md`、`docs/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`、`src/services/ipChanges/ipEvents.js`
+  - 交付前必须跑：
+    - 本仓库：`node scripts/changeip_regression.js`
+    - CarpoolNotifier：`bash scripts/check.sh`
 - 结构一致性：
   - 新增/重构代码必须遵循 `docs/ARCHITECTURE.md` 的目录分层。
   - 不得继续在 `src/` 根目录堆叠新的业务模块文件。
@@ -44,7 +56,7 @@
 ## 快速恢复（新对话 5 分钟）
 
 1. 先读：`AGENTS.md`、`docs/SPEC.md`、`docs/ARCHITECTURE.md`。
-2. 若涉及 `http_flow`/boil：再读 `docs/BOIL_FLOW.md` 与 `flows/ippanel.boil.network.json`。
+2. 若涉及 `http_flow`/boil：再读 `docs/BOIL_FLOW.md` 与 `flows/ippanel.boil.network.HKT.json` / `flows/ippanel.boil.network.HKBN.json`。
 3. 执行 `git status --short`，识别已有改动；不要回滚不属于本任务的内容。
 4. 按需改动代码与文档；命中回归条件时执行 `node scripts/changeip_regression.js`。
 5. 交付前确认 README/SPEC/INTEGRATION/RUNBOOK/ARCHITECTURE 是否已同步。

@@ -6,8 +6,8 @@
   "vars": {
     "account": "${ENV:BOIL_ACCOUNT}",
     "password": "${ENV:BOIL_PASSWORD}",
-    "router_id": "${ENV:BOIL_ROUTER_ID}",
-    "interface": "${ENV:BOIL_INTERFACE}"
+    "router_id": "131",
+    "interface": "adsl1"
   },
   "steps": [
     {

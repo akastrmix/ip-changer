@@ -6,8 +6,10 @@ const net = require('net');
 const path = require('path');
 
 const { _test: monitorTestHelpers } = require('../../src/monitor');
+const { _test: naturalTestHelpers } = require('../../src/monitor/natural');
 const { loadConfigFromEnv } = require('../../src/config');
-const { makeIpv6OpId } = require('../../src/opId');
+const { isValidIpv4, _test: ipv4TestHelpers } = require('../../src/ip/ipv4');
+const { makeIpv4OpId, makeIpv6OpId } = require('../../src/opId');
 const {
   loadChangeSession,
   markChangeSessionTimeoutStuckAlert,
@@ -198,15 +200,16 @@ async function testRequestRetriesConverge(tmpRoot) {
 async function testRetryAfterHonored(tmpRoot) {
   const calls = {
     total: 0,
-    firstLimitedAt: 0,
-    firstSuccessAt: 0
+    firstLimitedAt: 0n,
+    firstSuccessAt: 0n
   };
 
   const mock = await startMockServer(async ({ req, res }) => {
     if (req.method === 'POST' && req.url === '/retry-after') {
       calls.total += 1;
       if (calls.total === 1) {
-        calls.firstLimitedAt = Date.now();
+        // Use monotonic clock to avoid flakes when wall clock adjusts.
+        calls.firstLimitedAt = process.hrtime.bigint();
         res.statusCode = 429;
         res.setHeader('retry-after', '1');
         res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -214,7 +217,7 @@ async function testRetryAfterHonored(tmpRoot) {
         return;
       }
 
-      calls.firstSuccessAt = Date.now();
+      calls.firstSuccessAt = process.hrtime.bigint();
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.end('{"ok":true}');
@@ -249,9 +252,10 @@ async function testRetryAfterHonored(tmpRoot) {
   }
 
   assert(calls.total === 2, `expected 2 calls for retry-after flow, got ${calls.total}`);
+  const diffMs = Number(calls.firstSuccessAt - calls.firstLimitedAt) / 1e6;
   assert(
-    calls.firstSuccessAt - calls.firstLimitedAt >= 800,
-    `expected retry-after delay >= 800ms, got ${calls.firstSuccessAt - calls.firstLimitedAt}ms`
+    diffMs >= 800,
+    `expected retry-after delay >= 800ms, got ${diffMs.toFixed(1)}ms`
   );
 }
 
@@ -498,6 +502,110 @@ async function testIpEventsTerminalShortRetry() {
     });
     assert(!natural.ok, 'expected ipv4_changed not to use terminal retry policy');
     assert(calls.ipv4Changed === 1, `expected non-terminal event to post once, got ${calls.ipv4Changed}`);
+  } finally {
+    await mock.close();
+  }
+}
+
+async function testNaturalIpv4RetriesReuseOpId(tmpRoot) {
+  const events = [];
+  let callCount = 0;
+  const mock = await startMockServer(async ({ req, res, bodyText }) => {
+    if (req.method !== 'POST' || req.url !== '/internal/ip-events') {
+      res.statusCode = 404;
+      res.end('not found');
+      return;
+    }
+
+    let body = {};
+    try {
+      body = bodyText ? JSON.parse(bodyText) : {};
+    } catch {
+      body = {};
+    }
+    events.push(body);
+    callCount += 1;
+
+    res.statusCode = callCount === 1 ? 500 : 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.end(callCount === 1 ? '{"ok":false}' : '{"ok":true}');
+  });
+
+  const stateFile = path.join(tmpRoot, 'quick.natural_ipv4_reuse_op_id.json');
+  fs.writeFileSync(stateFile, JSON.stringify({
+    notified_ipv4: '1.2.3.4',
+    observed_ipv4: '1.2.3.4',
+    updated_at: '2026-03-01T00:00:00.000Z'
+  }), 'utf8');
+
+  const config = loadConfigFromEnv({
+    AUTH_TOKEN: 'token',
+    CHANGEIP_ENABLED: '0',
+    IP_EVENTS_ENABLED: '1',
+    IP_EVENTS_ENDPOINT: `http://127.0.0.1:${mock.port}/internal/ip-events`,
+    IP_EVENTS_TOKEN: 'events-token',
+    SERVER_LABEL: 'HKT',
+    REPORT_CHANNEL: '-1001234567890',
+    IP_STATE_FILE: stateFile
+  });
+
+  try {
+    const first = await naturalTestHelpers.handleNaturalMonitor({
+      config,
+      enabled: true,
+      fetchIp: async () => '5.6.7.8',
+      isValidIp: isValidIpv4,
+      makeOpId: makeIpv4OpId,
+      event: 'ipv4_changed',
+      notifiedField: 'notified_ipv4',
+      observedField: 'observed_ipv4',
+      oldField: 'old_ipv4',
+      newField: 'new_ipv4',
+      lastReportAtField: 'last_report_at',
+      lastReportErrorField: 'last_report_error',
+      pendingOpIdField: 'pending_ipv4_op_id',
+      pendingOldField: 'pending_ipv4_old_ipv4',
+      pendingNewField: 'pending_ipv4_new_ipv4'
+    });
+    assert(!first.ok, 'expected first ipv4_changed report to fail (mock 500)');
+    assert(events.length === 1, `expected 1 ipv4_changed post, got ${events.length}`);
+    const opId1 = String(events[0]?.op_id || '').trim();
+    assert(opId1, 'expected first ipv4_changed to include op_id');
+
+    const state1 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert(
+      String(state1.pending_ipv4_op_id || '').trim() === opId1,
+      'expected pending_ipv4_op_id to be persisted after failed report'
+    );
+
+    const second = await naturalTestHelpers.handleNaturalMonitor({
+      config,
+      enabled: true,
+      fetchIp: async () => '5.6.7.8',
+      isValidIp: isValidIpv4,
+      makeOpId: makeIpv4OpId,
+      event: 'ipv4_changed',
+      notifiedField: 'notified_ipv4',
+      observedField: 'observed_ipv4',
+      oldField: 'old_ipv4',
+      newField: 'new_ipv4',
+      lastReportAtField: 'last_report_at',
+      lastReportErrorField: 'last_report_error',
+      pendingOpIdField: 'pending_ipv4_op_id',
+      pendingOldField: 'pending_ipv4_old_ipv4',
+      pendingNewField: 'pending_ipv4_new_ipv4'
+    });
+    assert(second.ok, 'expected second ipv4_changed report to succeed (mock 200)');
+    assert(events.length === 2, `expected 2 ipv4_changed posts, got ${events.length}`);
+    const opId2 = String(events[1]?.op_id || '').trim();
+    assert(opId2 === opId1, `expected retry to reuse same op_id, got ${opId1} then ${opId2}`);
+
+    const state2 = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert(
+      String(state2.notified_ipv4 || '').trim() === '5.6.7.8',
+      `expected notified_ipv4 updated after success, got: ${String(state2.notified_ipv4 || '')}`
+    );
+    assert(!String(state2.pending_ipv4_op_id || '').trim(), 'expected pending_ipv4_op_id cleared after success');
   } finally {
     await mock.close();
   }
@@ -870,6 +978,34 @@ async function testCompileRejectsNonBooleanFields(tmpRoot) {
   );
 }
 
+async function testPublicIpv4OverrideGuardHelper() {
+  const disallowed = ipv4TestHelpers.resolveIpv4Override({
+    env: { PUBLIC_IPV4_OVERRIDE: '198.51.100.20' }
+  });
+  assert(disallowed === '', `expected override ignored when ALLOW_PUBLIC_IPV4_OVERRIDE is not enabled, got ${disallowed}`);
+
+  const allowed = ipv4TestHelpers.resolveIpv4Override({
+    env: {
+      ALLOW_PUBLIC_IPV4_OVERRIDE: '1',
+      PUBLIC_IPV4_OVERRIDE: '198.51.100.20'
+    }
+  });
+  assert(allowed === '198.51.100.20', `expected allowed override to pass through, got ${allowed}`);
+
+  let invalidThrown = false;
+  try {
+    ipv4TestHelpers.resolveIpv4Override({
+      env: {
+        ALLOW_PUBLIC_IPV4_OVERRIDE: '1',
+        PUBLIC_IPV4_OVERRIDE: 'not-an-ip'
+      }
+    });
+  } catch (err) {
+    invalidThrown = String(err || '').includes('public_ipv4_override_invalid');
+  }
+  assert(invalidThrown, 'expected invalid PUBLIC_IPV4_OVERRIDE to throw when override is enabled');
+}
+
 const QUICK_CASES = [
   {
     title: 'monitor computes pending retry due with interval backoff after timeout',
@@ -908,6 +1044,10 @@ const QUICK_CASES = [
     run: testCompileRejectsNonBooleanFields
   },
   {
+    title: 'PUBLIC_IPV4_OVERRIDE requires explicit allow flag',
+    run: testPublicIpv4OverrideGuardHelper
+  },
+  {
     title: 'wait_until enforces hard timeout when request exceeds deadline',
     run: testWaitUntilHardTimeout
   },
@@ -938,6 +1078,10 @@ const QUICK_CASES = [
   {
     title: 'ip-events terminal events use short retry while natural events remain single-attempt',
     run: testIpEventsTerminalShortRetry
+  },
+  {
+    title: 'natural ipv4 change retries reuse op_id for idempotency',
+    run: testNaturalIpv4RetriesReuseOpId
   },
   {
     title: 'change session creation surfaces pending state persist failure',

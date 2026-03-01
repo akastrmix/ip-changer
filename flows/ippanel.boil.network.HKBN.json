@@ -1,0 +1,80 @@
+{
+  "base_url": "https://ippanel.boil.network",
+  "timeout_ms": 20000,
+  "max_redirects": 5,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+  "vars": {
+    "account": "${ENV:BOIL_ACCOUNT}",
+    "password": "${ENV:BOIL_PASSWORD}",
+    "router_id": "208",
+    "interface": "vwan32"
+  },
+  "steps": [
+    {
+      "type": "request",
+      "name": "submit_login_form",
+      "method": "POST",
+      "url": "/login",
+      "headers": {
+        "origin": "https://ippanel.boil.network",
+        "referer": "https://ippanel.boil.network/login",
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+      },
+      "form": {
+        "account": "${account}",
+        "password": "${password}"
+      },
+      "retries": 2,
+      "retry_delay_ms": 1200,
+      "expect_status": [
+        200,
+        302
+      ]
+    },
+    {
+      "type": "request",
+      "name": "query_all_before_reconnect",
+      "method": "POST",
+      "url": "/api/query_all",
+      "headers": {
+        "origin": "https://ippanel.boil.network",
+        "referer": "https://ippanel.boil.network/",
+        "accept": "*/*"
+      },
+      "json": {},
+      "retries": 1,
+      "retry_delay_ms": 1000,
+      "expect_status": [
+        200,
+        202
+      ]
+    },
+    {
+      "type": "sleep",
+      "name": "wait_before_reconnect",
+      "ms": 5000
+    },
+    {
+      "type": "request",
+      "name": "trigger_reconnect",
+      "method": "POST",
+      "url": "/api/reconnect",
+      "headers": {
+        "origin": "https://ippanel.boil.network",
+        "referer": "https://ippanel.boil.network/",
+        "accept": "*/*"
+      },
+      "json": {
+        "router_id": "${router_id}",
+        "interface": "${interface}"
+      },
+      "retries": 3,
+      "retry_delay_ms": 1500,
+      "allow_network_error": true,
+      "expect_status": [
+        200,
+        202
+      ]
+    }
+  ]
+}

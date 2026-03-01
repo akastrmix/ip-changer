@@ -426,6 +426,8 @@ function buildEnv({
     IP_MONITOR_ENABLED: '0',
     SERVER_LABEL: 'REGRESSION',
     REPORT_CHANNEL: '',
+    ALLOW_PUBLIC_IPV4_OVERRIDE: '1',
+    PUBLIC_IPV4_OVERRIDE: '198.51.100.10',
     IP_STATE_FILE: stateFile,
     PENDING_CHANGE_FILE: pendingFile,
     CHANGE_MONITOR_START_DELAY_SECONDS: '3600',
@@ -448,12 +450,13 @@ function makeCaseFiles(tmpRoot, name) {
   };
 }
 
-async function postChangeIp(port) {
+async function postChangeIp(port, extraBody = null) {
+  const extra = extraBody && typeof extraBody === 'object' ? extraBody : {};
   return httpRequest({
     port,
     method: 'POST',
     pathname: '/changeip',
-    body: { token: AUTH_TOKEN }
+    body: { token: AUTH_TOKEN, ...extra }
   });
 }
 

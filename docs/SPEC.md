@@ -81,7 +81,7 @@ HTTP 服务：
 - `IP_EVENTS_TOKEN`：Bearer token（与 Worker secret `IP_EVENTS_TOKEN` 一致）
 - `CHANGE_MONITOR_START_DELAY_SECONDS`：触发 provider 后延迟多久开始监测（默认 `30`；若设置了重启延迟，则会在“预计重启时间”之后再加上该延迟）
 - `CHANGE_MONITOR_INTERVAL_SECONDS`：监测间隔（默认 `10`；仅在“换 IP 会话进行中”使用）
-- `CHANGE_MONITOR_TIMEOUT_SECONDS`：监测超时（默认 `600` / 10 分钟）
+- `CHANGE_MONITOR_TIMEOUT_SECONDS`：监测超时（默认 `1800` / 30 分钟）
 
 关于 interval（避免“重复监测”误解）：
 
@@ -93,7 +93,9 @@ HTTP 服务：
 
 - `/changeip` 会话终态判定只看 IPv4；IPv6 当前不参与 `change_*` 语义。
 - 开始监测后，获取到合法公网 IPv4 后即可判定终态：
-  - 若 `old_ipv4` 缺失（会话创建时未拿到基线）：`change_failed`（`old_ipv4_unknown`）
+  - 若 `old_ipv4` 缺失（会话创建时未拿到基线）：
+    - 优先尝试从 `IP_STATE_FILE`（`notified_ipv4` / `observed_ipv4`）回填基线并继续判定
+    - 若到会话超时仍无可用基线：`change_failed`（`old_ipv4_unknown`）
   - 若 `ip1 != old_ipv4`：`change_succeeded`
   - 若 `ip1 == old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
@@ -155,8 +157,11 @@ HTTP 防护约束（资源与稳定性）：
 启用时：
 
 - 鉴权：Body 必须包含 `{ "token": "<AUTH_TOKEN>" }`，否则 `403`
+  - 可选：`{ "force": true }` 用于清理“已超时”的 `pending_change` 会话并重新触发
+    - 若 `pending_change` 的超时字段损坏，会基于 `started_at` + 当前配置推导超时；仅在确认已超时后才会清理
 - 若未启用事件流上报（`IP_EVENTS_ENABLED=1` 且配置齐全），则会返回 `500`：`ip events not configured`
-- 若存在进行中的会话（`pending_change.json` 里已有 `op_id`），返回 `409`：`change already in progress`（并带现有 `op_id`）
+- 若存在进行中的会话（`pending_change.json` 里已有 `op_id`），默认返回 `409`：`change already in progress`（并带现有 `op_id`）
+  - 若请求带 `force=true` 且该会话已超时（优先使用 `timeout_at_ms`；必要时基于 `started_at` + 当前配置推导），则会先清理旧会话再触发新会话
 - provider 规则：
   - `CHANGEIP_PROVIDER` 必须为 `script` / `exec` / `http_flow`
   - provider=`http_flow` 时，flow 文件必须是合法 JSON 对象，且包含非空 `steps` 数组
@@ -166,27 +171,22 @@ HTTP 防护约束（资源与稳定性）：
     - 脚本不存在：`500` `changeip script not found`
     - 脚本不是常规文件：`500` `changeip script is not a regular file`
     - 脚本不可读：`500` `changeip script not readable`
-    - spawn 失败：`500` `failed to spawn changeip script`
-    - 脚本启动后很快异常退出：`500` `changeip script exited early`
   - provider=`exec`：
     - 命令为空：`500` `changeip exec command is empty`
-    - spawn 失败：`500` `failed to spawn changeip exec command`
-    - 命令启动后很快异常退出：`500` `changeip exec command exited early`
   - provider=`http_flow`：
     - flow JSON 非法：`500` `invalid http_flow json: ...`
     - flow 顶层结构非法：`500` `http_flow file must be a JSON object`
     - `steps` 为空或不是数组：`500` `http_flow steps must be a non-empty array`
-    - 启动探测窗口内步骤失败（例如断言失败/变量缺失/请求异常）：`500` `changeip http_flow flow failed`
-    - 若已通过启动探测窗口后后台步骤失败，不会改写本次 `/changeip` 返回码；错误会写入日志，并由后续会话事件收敛为 `change_no_change` 或 `change_failed`
-  - 所有 provider 启动失败响应都包含 `provider_error_code`，用于稳定机读分支：
+  - 启动探测/运行时失败：
+    - `/changeip` 的 `ok=true` 仅表示“触发已接受”，不保证此时 provider 已完成启动探测。
+    - provider 的 `spawn_failed` / `*_exited_early` / `http_flow_failed` 等启动/运行时失败会尽快上报 `change_failed(reason=...)`，并由监测循环在必要时重试同一终态事件。
+  - 仅“校验阶段失败”的 `500` 响应包含 `provider_error_code`（用于稳定机读分支）：
     - `provider.unsupported`
     - `provider.config_invalid`
-    - `provider.spawn_failed`
-    - `provider.exited_early`
-    - `provider.runtime_failed`
   - provider 启动失败时会尝试立即上报 `change_failed`；若该次上报被拒绝/超时，会保留 pending 会话并由监测循环重试同一 `change_failed`（`reason` 维持原失败原因）
 - 成功：
   - 后台执行：按 provider 触发（`script` / `exec` / `http_flow`）
+  - 当会话初始 `old_ipv4` 不可用时，会异步尝试公网 IPv4 回填基线；该回填不会阻塞 `200` 返回
   - 重启行为：
     - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
     - 否则安排重启：`shutdown -r +<REBOOT_DELAY_MINUTES>`
@@ -196,8 +196,9 @@ HTTP 防护约束（资源与稳定性）：
     - `changeip_provider`
     - `server_label`
     - `channel`
-    - `old_ipv4`（来自状态文件 `notified_ipv4`，可为 `null`）
-    - `reboot_scheduled` / `reboot_delay_minutes`（用于调试附加字段）
+    - `old_ipv4`（优先来自状态文件 `notified_ipv4`，其次 `observed_ipv4`，可为 `null`）
+    - `reboot_schedule_requested`（是否计划安排重启；`REBOOT_DELAY_MINUTES!=-1`）
+    - `reboot_delay_minutes`（计划的重启延迟分钟；`REBOOT_DELAY_MINUTES=-1` 时为 `-1`）
   - 语义说明：
     - `200 + ok=true` 表示“触发已接受”，不表示最终换 IP 成功。
     - 最终结果以后续会话终态事件 `change_succeeded` / `change_no_change` / `change_failed` 为准。
@@ -221,10 +222,12 @@ HTTP 防护约束（资源与稳定性）：
   - 发送事件上报到 `IP_EVENTS_ENDPOINT`（`event=ipv4_changed`）
   - 上报成功才会更新 `notified_ipv4`
   - 上报失败会保留旧的 `notified_ipv4`，从而在下一次检测仍会继续尝试上报（直到成功）
+  - 为避免短暂故障导致“同一次变化被重复播报”：同一次观测到的变化会先把 `op_id + old/new` 持久化到状态文件，并在后续重试中复用同一个 `op_id`；上报成功（或变化回滚到基线）后会清理该 pending 记录
 - 后续运行：当检测到当前 IPv6 `!= notified_ipv6` 时：
   - 发送事件上报到 `IP_EVENTS_ENDPOINT`（`event=ipv6_changed`）
   - 上报成功才会更新 `notified_ipv6`
   - 上报失败会保留旧的 `notified_ipv6`，从而在下一次检测仍会继续尝试上报（直到成功）
+  - 同理：IPv6 自然变化上报失败重试也会复用同一个 `op_id`（直到成功或回滚）
 
 ### 5.3 上报请求格式
 
@@ -275,6 +278,10 @@ JSON 对象（以当前版本定义为准，不承诺向后兼容旧字段）：
 - `last_report_error`：最近一次上报失败的错误摘要（可选）
 - `last_report_at_ipv6`：最近一次 IPv6 成功上报时间（ISO，可选）
 - `last_report_error_ipv6`：最近一次 IPv6 上报失败摘要（可选）
+- `pending_ipv4_op_id` / `pending_ipv4_old_ipv4` / `pending_ipv4_new_ipv4`（可选）：
+  - 当观测到 IPv4 变化但上报尚未成功时，用于暂存本次变化的 `op_id + old/new`，以便重试时保持幂等（避免重复播报）
+  - 上报成功或变化回滚到基线（`observed_ipv4 == notified_ipv4`）后会清理该字段
+- `pending_ipv6_op_id` / `pending_ipv6_old_ipv6` / `pending_ipv6_new_ipv6`（可选）：同理（用于 `ipv6_changed`）
 
 写入采用 `*.tmp` + rename，并对临时文件做 `fsync`（目录 `fsync` 为 best-effort），尽量降低断电场景下丢最近一次写入的概率。
 
@@ -285,11 +292,17 @@ JSON 对象（用于跨重启恢复；字段按当前版本严格校验，不兼
 - `op_id`：当前换 IP 会话 ID
 - `server_label` / `channel`：本次会话路由字段
 - `old_ipv4`：会话基线 IP（可为空）
+- `provider_start_attempted`：是否已尝试启动 provider（用于跨重启避免重复触发；启动探测窗口内崩溃也会留下该标记）
+- `provider_start_attempted_at`：启动 provider 尝试时间（ISO，可为空字符串）
 - `provider_started`：provider 是否已通过启动探测（`false` 时不会发送 `change_started`）
 - `provider_failed_reason`：provider 启动失败时的失败原因（用于重试 `change_failed` 保持 reason 稳定；未失败时为空字符串）
 - `started_at`：会话创建时间（ISO）
 - `reboot_delay_minutes`：本次会话采用的重启策略（`-1` 或 `1..15`）
-- `started_sent`：`change_started` 是否已成功上报
+- `reboot_schedule_attempted`：是否已尝试安排重启（仅 `reboot_delay_minutes != -1` 时有意义）
+- `reboot_scheduled`：是否已成功安排重启
+- `reboot_schedule_error`：安排重启失败的错误摘要（可为空字符串）
+- `reboot_scheduled_at`：重启安排时间（ISO，可为空字符串）
+- `started_sent`：`change_started` 是否已成功上报（best-effort；消费者不应依赖该事件来触发播报或做终态收敛）
 - `monitor_after_ms`：允许开始判定终态的最早时间戳（毫秒）
 - `timeout_at_ms`：会话超时截止时间戳（毫秒）
 - `offline_observed`（可选）：无重启模式下是否观测到过断网
@@ -298,6 +311,11 @@ JSON 对象（用于跨重启恢复；字段按当前版本严格校验，不兼
 - `timeout_stuck_alert_last_at`（可选）：最近一次“超时未收敛”告警时间（ISO）
 - `timeout_stuck_alert_last_reason`（可选）：最近一次“超时未收敛”告警原因摘要
 - `last_error`（可选）：最近一次上报失败摘要
+- `terminal_sent`：终态（`change_*`）是否已成功上报
+- `terminal_event`：已上报的终态事件名（可为空字符串）
+- `terminal_reason`：已上报的终态 reason（可为空字符串）
+- `terminal_ipv4`：本次会话最终观测到的 IPv4（用于跨重启持久化 `ip_state`；可为空字符串）
+- `terminal_sent_at`：终态上报时间（ISO，可为空字符串）
 
 并发约束：
 

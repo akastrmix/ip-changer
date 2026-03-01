@@ -24,30 +24,116 @@ const {
 
 const TERMINAL_EVENT_SET = new Set(['change_succeeded', 'change_no_change', 'change_failed']);
 
+function buildPendingSessionFixture({
+  opId,
+  serverLabel = 'REGRESSION',
+  channel = '',
+  oldIpv4 = '1.2.3.4',
+  providerStartAttempted = true,
+  providerStartAttemptedAt = '',
+  providerStarted = true,
+  providerFailedReason = '',
+  startedAt,
+  rebootDelayMinutes = -1,
+  rebootScheduleAttempted = false,
+  rebootScheduled = false,
+  rebootScheduleError = '',
+  rebootScheduledAt = '',
+  startedSent = true,
+  monitorAfterMs,
+  timeoutAtMs,
+  timeoutStuckAlertNextAtMs = 0,
+  timeoutStuckAlertCount = 0,
+  timeoutStuckAlertLastAt = '',
+  timeoutStuckAlertLastReason = '',
+  lastError = '',
+  terminalSent = false,
+  terminalEvent = '',
+  terminalReason = '',
+  terminalIpv4 = '',
+  terminalSentAt = ''
+} = {}) {
+  const nowMs = Date.now();
+  const startedAtIso = String(startedAt || new Date(nowMs - 60_000).toISOString());
+  const monitorAfterMsValue = Number.isFinite(Number(monitorAfterMs))
+    ? Number(monitorAfterMs)
+    : (nowMs - 30_000);
+  const timeoutAtMsValue = Number.isFinite(Number(timeoutAtMs))
+    ? Number(timeoutAtMs)
+    : (monitorAfterMsValue + 60_000);
+  const providerStartAttemptedAtIso = providerStartAttemptedAt || (providerStartAttempted ? startedAtIso : '');
+
+  return {
+    op_id: opId,
+    server_label: serverLabel,
+    channel,
+    old_ipv4: oldIpv4,
+    provider_start_attempted: providerStartAttempted,
+    provider_start_attempted_at: providerStartAttemptedAtIso,
+    provider_started: providerStarted,
+    provider_failed_reason: providerFailedReason,
+    started_at: startedAtIso,
+    reboot_delay_minutes: rebootDelayMinutes,
+    reboot_schedule_attempted: rebootScheduleAttempted,
+    reboot_scheduled: rebootScheduled,
+    reboot_schedule_error: rebootScheduleError,
+    reboot_scheduled_at: rebootScheduledAt,
+    started_sent: startedSent,
+    monitor_after_ms: monitorAfterMsValue,
+    timeout_at_ms: timeoutAtMsValue,
+    timeout_stuck_alert_next_at_ms: timeoutStuckAlertNextAtMs,
+    timeout_stuck_alert_count: timeoutStuckAlertCount,
+    timeout_stuck_alert_last_at: timeoutStuckAlertLastAt,
+    timeout_stuck_alert_last_reason: timeoutStuckAlertLastReason,
+    last_error: lastError,
+    terminal_sent: terminalSent,
+    terminal_event: terminalEvent,
+    terminal_reason: terminalReason,
+    terminal_ipv4: terminalIpv4,
+    terminal_sent_at: terminalSentAt
+  };
+}
+
+function writePendingSessionFixture(pendingFile, overrides = {}, mutate) {
+  const pending = buildPendingSessionFixture(overrides);
+  if (typeof mutate === 'function') {
+    mutate(pending);
+  }
+  fs.writeFileSync(pendingFile, JSON.stringify(pending), 'utf8');
+}
+
 function writeTimedOutPendingSession(pendingFile, {
   opId = '20260228T101500Z_regression_ipv4_ab12cd',
   oldIpv4 = '1.2.3.4'
 } = {}) {
   const nowMs = Date.now();
-  const pending = {
-    op_id: opId,
-    server_label: 'REGRESSION',
-    channel: '',
-    old_ipv4: oldIpv4,
-    provider_started: true,
-    provider_failed_reason: '',
-    started_at: new Date(nowMs - 120_000).toISOString(),
-    reboot_delay_minutes: -1,
-    started_sent: true,
-    monitor_after_ms: nowMs - 90_000,
-    timeout_at_ms: nowMs - 60_000,
-    timeout_stuck_alert_next_at_ms: 0,
-    timeout_stuck_alert_count: 0,
-    timeout_stuck_alert_last_at: '',
-    timeout_stuck_alert_last_reason: '',
-    last_error: ''
-  };
-  fs.writeFileSync(pendingFile, JSON.stringify(pending), 'utf8');
+  writePendingSessionFixture(pendingFile, {
+    opId,
+    oldIpv4,
+    startedAt: new Date(nowMs - 120_000).toISOString(),
+    startedSent: true,
+    monitorAfterMs: nowMs - 90_000,
+    timeoutAtMs: nowMs - 60_000
+  });
+}
+
+function writeStartingPendingSession(pendingFile, {
+  opId = '20260228T101500Z_regression_ipv4_starting1',
+  oldIpv4 = '1.2.3.4'
+} = {}) {
+  const nowMs = Date.now();
+  const monitorAfterMs = nowMs + (60 * 60 * 1000);
+  writePendingSessionFixture(pendingFile, {
+    opId,
+    oldIpv4,
+    providerStartAttempted: false,
+    providerStartAttemptedAt: '',
+    providerStarted: false,
+    startedAt: new Date(nowMs - 1000).toISOString(),
+    startedSent: false,
+    monitorAfterMs,
+    timeoutAtMs: monitorAfterMs + (10 * 60 * 1000)
+  });
 }
 
 async function startRejectingEventSink({ statusCode = 500 } = {}) {
@@ -226,17 +312,14 @@ async function testFailFastScriptDoesNotLeavePending(tmpRoot, sink) {
   await runWithServer(env, async () => {
     const beforeEvents = sink.events.length;
     const resp = await postChangeIp(port);
-    assert(resp.status === 500, `expected 500, got ${resp.status}`);
-    assert(resp.json?.error === 'changeip script exited early', `unexpected error: ${resp.text}`);
-    assert(resp.json?.provider_error_code === 'provider.exited_early', `unexpected error code: ${resp.text}`);
+    assert(resp.status === 200, `expected 200, got ${resp.status}`);
+    assert(resp.json?.ok === true, `expected ok=true, got ${resp.text}`);
 
-    await sleep(250);
-    assert(!fs.existsSync(files.pendingFile), 'pending_change.json should be cleared after fail-fast');
-
-    const next = await postChangeIp(port);
-    assert(next.status === 500, `expected second call 500, got ${next.status}`);
-    assert(next.json?.error === 'changeip script exited early', `unexpected second error: ${next.text}`);
-    assert(next.json?.provider_error_code === 'provider.exited_early', `unexpected second error code: ${next.text}`);
+    await waitUntil(() => !fs.existsSync(files.pendingFile), {
+      timeoutMs: 6000,
+      intervalMs: 150,
+      label: 'pending_change.json should be cleared after fail-fast provider'
+    });
 
     const newEvents = sink.events.slice(beforeEvents);
     const failed = newEvents.filter((e) => e.body?.event === 'change_failed' && e.body?.reason === 'script_exited_early');
@@ -273,15 +356,20 @@ async function testFailFastScriptRetriesFailedTerminalReport(tmpRoot, _sink) {
   try {
     await runWithServer(env, async () => {
       const resp = await postChangeIp(port);
-      assert(resp.status === 500, `expected 500, got ${resp.status}`);
-      assert(resp.json?.error === 'changeip script exited early', `unexpected error: ${resp.text}`);
-      assert(resp.json?.provider_error_code === 'provider.exited_early', `unexpected error code: ${resp.text}`);
+      assert(resp.status === 200, `expected 200, got ${resp.status}`);
+      assert(resp.json?.ok === true, `expected ok=true, got ${resp.text}`);
 
-      await sleep(250);
-      assert(
-        fs.existsSync(files.pendingFile),
-        'pending_change.json should remain when initial change_failed report is rejected'
-      );
+      await waitUntil(() => {
+        if (!fs.existsSync(files.pendingFile)) return false;
+        const pending = JSON.parse(fs.readFileSync(files.pendingFile, 'utf8'));
+        return pending.provider_start_attempted === true &&
+          pending.provider_started === false &&
+          String(pending.provider_failed_reason || '').trim().length > 0;
+      }, {
+        timeoutMs: 3000,
+        intervalMs: 50,
+        label: 'expected provider_start_attempted + provider_failed_reason to persist after fail-fast provider start failure'
+      });
 
       const pending = JSON.parse(fs.readFileSync(files.pendingFile, 'utf8'));
       const opId = String(pending.op_id || '');
@@ -323,19 +411,18 @@ async function testInvalidPendingSchemaIsCleared(tmpRoot, sink) {
   const files = makeCaseFiles(tmpRoot, 'invalid_pending_schema_cleared');
   const nowMs = Date.now();
   const opId = '20260301T010203Z_regression_ipv4_deadbe';
-  const invalidPending = {
-    op_id: opId,
-    server_label: 'REGRESSION',
-    channel: '',
-    old_ipv4: '1.2.3.4',
-    started_at: new Date(nowMs - 20_000).toISOString(),
-    reboot_delay_minutes: -1,
-    started_sent: true,
-    monitor_after_ms: nowMs - 10_000,
-    timeout_at_ms: nowMs + 120_000,
-    last_error: ''
-  };
-  fs.writeFileSync(files.pendingFile, JSON.stringify(invalidPending), 'utf8');
+  writePendingSessionFixture(files.pendingFile, {
+    opId,
+    startedAt: new Date(nowMs - 20_000).toISOString(),
+    startedSent: true,
+    monitorAfterMs: nowMs - 10_000,
+    timeoutAtMs: nowMs + 120_000
+  }, (invalidPending) => {
+    // Simulate legacy/incomplete payload by removing required fields.
+    delete invalidPending.provider_started;
+    delete invalidPending.provider_failed_reason;
+    delete invalidPending.provider_start_attempted;
+  });
   const beforeEvents = sink.events.length;
 
   const port = await getFreePort();
@@ -374,20 +461,15 @@ async function testInvalidPendingSchemaIsCleared(tmpRoot, sink) {
 async function testInvalidPendingMissingOpIdIsClearedWhenChangeipDisabled(tmpRoot, sink) {
   const files = makeCaseFiles(tmpRoot, 'invalid_pending_missing_op_id_cleared');
   const nowMs = Date.now();
-  const invalidPending = {
-    server_label: 'REGRESSION',
-    channel: '',
-    old_ipv4: '1.2.3.4',
-    provider_started: true,
-    provider_failed_reason: '',
-    started_at: new Date(nowMs - 20_000).toISOString(),
-    reboot_delay_minutes: -1,
-    started_sent: true,
-    monitor_after_ms: nowMs - 10_000,
-    timeout_at_ms: nowMs + 120_000,
-    last_error: ''
-  };
-  fs.writeFileSync(files.pendingFile, JSON.stringify(invalidPending), 'utf8');
+  writePendingSessionFixture(files.pendingFile, {
+    opId: '20260301T010203Z_regression_missingopid',
+    startedAt: new Date(nowMs - 20_000).toISOString(),
+    startedSent: true,
+    monitorAfterMs: nowMs - 10_000,
+    timeoutAtMs: nowMs + 120_000
+  }, (invalidPending) => {
+    delete invalidPending.op_id;
+  });
   const beforeEvents = sink.events.length;
 
   const port = await getFreePort();
@@ -461,17 +543,14 @@ async function testFailFastExecDoesNotLeavePending(tmpRoot, sink) {
   await runWithServer(env, async () => {
     const beforeEvents = sink.events.length;
     const resp = await postChangeIp(port);
-    assert(resp.status === 500, `expected 500, got ${resp.status}`);
-    assert(resp.json?.error === 'changeip exec command exited early', `unexpected error: ${resp.text}`);
-    assert(resp.json?.provider_error_code === 'provider.exited_early', `unexpected error code: ${resp.text}`);
+    assert(resp.status === 200, `expected 200, got ${resp.status}`);
+    assert(resp.json?.ok === true, `expected ok=true, got ${resp.text}`);
 
-    await sleep(250);
-    assert(!fs.existsSync(files.pendingFile), 'pending_change.json should be cleared after exec fail-fast');
-
-    const next = await postChangeIp(port);
-    assert(next.status === 500, `expected second call 500, got ${next.status}`);
-    assert(next.json?.error === 'changeip exec command exited early', `unexpected second error: ${next.text}`);
-    assert(next.json?.provider_error_code === 'provider.exited_early', `unexpected second error code: ${next.text}`);
+    await waitUntil(() => !fs.existsSync(files.pendingFile), {
+      timeoutMs: 6000,
+      intervalMs: 150,
+      label: 'pending_change.json should be cleared after exec fail-fast provider'
+    });
 
     const newEvents = sink.events.slice(beforeEvents);
     const failed = newEvents.filter((e) => e.body?.event === 'change_failed' && e.body?.reason === 'exec_exited_early');
@@ -682,6 +761,69 @@ async function testHttpFlowProviderAllowsNetworkErrorOnFinalStep(tmpRoot, sink) 
   }
 }
 
+async function testHttpFlowLateFailureConvergesToChangeFailed(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'http_flow_late_failure');
+  const flowFile = path.join(files.dir, 'flow.late-failure.json');
+  const flow = {
+    steps: [
+      { type: 'sleep', name: 'grace_pass', ms: 2000 },
+      { type: 'set', name: 'x', value: 'a' },
+      { type: 'assert', name: 'fail', from: 'var', var: 'x', equals: 'b' }
+    ]
+  };
+  fs.writeFileSync(flowFile, JSON.stringify(flow), 'utf8');
+
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'http_flow',
+      endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+      httpFlowFile: flowFile,
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGE_MONITOR_START_DELAY_SECONDS: '0',
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1',
+    CHANGE_MONITOR_TIMEOUT_SECONDS: '30'
+  };
+
+  await runWithServer(env, async () => {
+    const beforeEvents = sink.events.length;
+    const resp = await postChangeIp(port);
+    assert(resp.status === 200, `expected 200, got ${resp.status}`);
+    const opId = String(resp.json?.op_id || '');
+    assert(opId, `expected op_id, got: ${resp.text}`);
+
+    await waitUntil(() => {
+      const newEvents = sink.events.slice(beforeEvents);
+      const terminal = newEvents.find((e) => (
+        e.body?.event === 'change_failed' &&
+        String(e.body?.op_id || '') === opId &&
+        e.body?.reason === 'http_flow_failed'
+      ));
+      return !!terminal;
+    }, {
+      timeoutMs: 15000,
+      intervalMs: 150,
+      label: 'expected change_failed(http_flow_failed) after late http_flow runtime failure'
+    });
+
+    const newEvents = sink.events.slice(beforeEvents);
+    const noChange = newEvents.find((e) => (
+      e.body?.event === 'change_no_change' &&
+      String(e.body?.op_id || '') === opId
+    ));
+    assert(!noChange, 'did not expect change_no_change for http_flow late failure session');
+
+    await waitUntil(() => !fs.existsSync(files.pendingFile), {
+      timeoutMs: 8000,
+      intervalMs: 150,
+      label: 'expected pending session to be cleared after http_flow late failure terminal event'
+    });
+  });
+}
+
 async function testHttpFlowRequestRetriesAndWaitUntil(tmpRoot, sink) {
   const files = makeCaseFiles(tmpRoot, 'http_flow_retries_wait_until');
   const mock = await startHttpFlowResilienceMock({
@@ -873,6 +1015,154 @@ async function testRequireProviderWhenChangeipEnabled(tmpRoot, sink) {
   await startIpChangerExpectConfigError(env, 'CHANGEIP_PROVIDER is required when CHANGEIP_ENABLED=1');
 }
 
+async function testForceClearsTimedOutPendingSession(tmpRoot, _sink) {
+  const files = makeCaseFiles(tmpRoot, 'force_clear_timed_out_pending');
+  const oldOpId = '20260301T010203Z_regression_forceclear1';
+  writeTimedOutPendingSession(files.pendingFile, { opId: oldOpId });
+  const rejectingSink = await startRejectingEventSink({ statusCode: 500 });
+
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'exec',
+      endpoint: `http://127.0.0.1:${rejectingSink.port}/internal/ip-events`,
+      execCommand: 'sleep 3; exit 0',
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGE_MONITOR_START_DELAY_SECONDS: '0',
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1'
+  };
+
+  try {
+    await runWithServer(env, async () => {
+      const conflict = await postChangeIp(port);
+      assert(conflict.status === 409, `expected 409, got ${conflict.status}`);
+      assert(conflict.json?.op_id === oldOpId, `expected conflict op_id=${oldOpId}, got: ${conflict.text}`);
+
+      const forced = await postChangeIp(port, { force: true });
+      assert(forced.status === 200, `expected 200, got ${forced.status}`);
+      assert(forced.json?.ok === true, `expected ok=true, got: ${forced.text}`);
+      assert(
+        String(forced.json?.op_id || '') && forced.json.op_id !== oldOpId,
+        `expected new op_id != ${oldOpId}, got: ${forced.text}`
+      );
+
+      assert(fs.existsSync(files.pendingFile), 'expected pending_change.json to exist after forced /changeip accepted');
+      const pending = JSON.parse(fs.readFileSync(files.pendingFile, 'utf8'));
+      assert(
+        String(pending.op_id || '') === String(forced.json.op_id || ''),
+        `expected pending session op_id to match response op_id, got: ${JSON.stringify(pending)}`
+      );
+    });
+  } finally {
+    await rejectingSink.close();
+  }
+}
+
+async function testForceClearsComputedTimedOutPendingSessionWithInvalidTimeout(tmpRoot, _sink) {
+  const files = makeCaseFiles(tmpRoot, 'force_clear_computed_timed_out_pending');
+  const nowMs = Date.now();
+  const oldOpId = '20260301T010203Z_regression_forceclear2';
+  writePendingSessionFixture(files.pendingFile, {
+    opId: oldOpId,
+    startedAt: new Date(nowMs - (15 * 60 * 1000)).toISOString(),
+    startedSent: true,
+    monitorAfterMs: nowMs - (14 * 60 * 1000)
+  }, (invalidPending) => {
+    invalidPending.timeout_at_ms = null;
+  });
+  const rejectingSink = await startRejectingEventSink({ statusCode: 500 });
+
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'exec',
+      endpoint: `http://127.0.0.1:${rejectingSink.port}/internal/ip-events`,
+      execCommand: 'exit 0',
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGE_MONITOR_START_DELAY_SECONDS: '0',
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1',
+    CHANGE_MONITOR_TIMEOUT_SECONDS: '600'
+  };
+
+  try {
+    await runWithServer(env, async () => {
+      const conflict = await postChangeIp(port);
+      assert(conflict.status === 409, `expected 409, got ${conflict.status}`);
+      assert(conflict.json?.op_id === oldOpId, `expected conflict op_id=${oldOpId}, got: ${conflict.text}`);
+
+      const forced = await postChangeIp(port, { force: true });
+      assert(forced.status === 200, `expected 200, got ${forced.status}`);
+      assert(forced.json?.ok === true, `expected ok=true, got: ${forced.text}`);
+      assert(
+        String(forced.json?.op_id || '') && forced.json.op_id !== oldOpId,
+        `expected new op_id != ${oldOpId}, got: ${forced.text}`
+      );
+
+      assert(fs.existsSync(files.pendingFile), 'expected pending_change.json to exist after forced /changeip accepted');
+      const pending = JSON.parse(fs.readFileSync(files.pendingFile, 'utf8'));
+      assert(
+        String(pending.op_id || '') === String(forced.json.op_id || ''),
+        `expected pending session op_id to match response op_id, got: ${JSON.stringify(pending)}`
+      );
+    });
+  } finally {
+    await rejectingSink.close();
+  }
+}
+
+async function testForceDoesNotClearComputedNotTimedOutPendingSessionWithInvalidTimeout(tmpRoot, _sink) {
+  const files = makeCaseFiles(tmpRoot, 'force_refuse_computed_not_timed_out_pending');
+  const nowMs = Date.now();
+  const oldOpId = '20260301T010203Z_regression_forceclear3';
+  writePendingSessionFixture(files.pendingFile, {
+    opId: oldOpId,
+    startedAt: new Date(nowMs - 30_000).toISOString(),
+    startedSent: true,
+    monitorAfterMs: nowMs - 10_000
+  }, (invalidPending) => {
+    invalidPending.timeout_at_ms = null;
+  });
+  const rejectingSink = await startRejectingEventSink({ statusCode: 500 });
+
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'exec',
+      endpoint: `http://127.0.0.1:${rejectingSink.port}/internal/ip-events`,
+      execCommand: 'exit 0',
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGE_MONITOR_START_DELAY_SECONDS: '0',
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1',
+    CHANGE_MONITOR_TIMEOUT_SECONDS: '600'
+  };
+
+  try {
+    await runWithServer(env, async () => {
+      const conflict = await postChangeIp(port);
+      assert(conflict.status === 409, `expected 409, got ${conflict.status}`);
+      assert(conflict.json?.op_id === oldOpId, `expected conflict op_id=${oldOpId}, got: ${conflict.text}`);
+
+      const forced = await postChangeIp(port, { force: true });
+      assert(forced.status === 409, `expected 409, got ${forced.status}`);
+      assert(forced.json?.op_id === oldOpId, `expected forced conflict op_id=${oldOpId}, got: ${forced.text}`);
+      assert(fs.existsSync(files.pendingFile), 'expected pending_change.json to remain after refused force');
+      const pending = JSON.parse(fs.readFileSync(files.pendingFile, 'utf8'));
+      assert(String(pending.op_id || '') === oldOpId, `expected pending op_id to remain ${oldOpId}, got ${pending.op_id}`);
+    });
+  } finally {
+    await rejectingSink.close();
+  }
+}
+
 async function testTimedOutPendingSessionReportsStuckAlertOnIpEvent500(tmpRoot, _sink) {
   const files = makeCaseFiles(tmpRoot, 'pending_timeout_ip_event_500');
   writeTimedOutPendingSession(files.pendingFile);
@@ -964,6 +1254,40 @@ async function testTimedOutPendingSessionReportsStuckAlertOnIpEventTimeout(tmpRo
   }
 }
 
+async function testPendingSessionDoesNotFailWhenProviderNotMarkedStartedYet(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'pending_provider_starting');
+  writeStartingPendingSession(files.pendingFile, {
+    opId: '20260228T101500Z_regression_ipv4_starting2'
+  });
+
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'exec',
+      endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+      execCommand: 'sleep 3; exit 0',
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGE_MONITOR_START_DELAY_SECONDS: '0',
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1'
+  };
+
+  await runWithServer(env, async () => {
+    const beforeEvents = sink.events.length;
+    await sleep(800);
+    const events = sink.events.slice(beforeEvents);
+    const failed = events.filter((e) => e.body?.event === 'change_failed');
+    assert(failed.length === 0, `expected no change_failed events while provider_started=false with no failure reason, got ${failed.length}`);
+    const started = events.filter((e) => e.body?.event === 'change_started');
+    assert(
+      started.length === 0,
+      `expected no change_started events while provider_started=false, got ${started.length}`
+    );
+  });
+}
+
 const CASES = [
   {
     title: 'concurrent /changeip only accepts one request (script provider)',
@@ -978,7 +1302,7 @@ const CASES = [
     run: testRejectNonRegularFile
   },
   {
-    title: 'fail-fast script returns 500 and clears pending',
+    title: 'fail-fast script returns 200 and clears pending via change_failed',
     run: testFailFastScriptDoesNotLeavePending
   },
   {
@@ -998,7 +1322,7 @@ const CASES = [
     run: testExecProviderOnlyOneAccepted
   },
   {
-    title: 'fail-fast exec returns 500 and clears pending',
+    title: 'fail-fast exec returns 200 and clears pending via change_failed',
     run: testFailFastExecDoesNotLeavePending
   },
   {
@@ -1008,6 +1332,10 @@ const CASES = [
   {
     title: 'http_flow provider can tolerate network drop on final action step',
     run: testHttpFlowProviderAllowsNetworkErrorOnFinalStep
+  },
+  {
+    title: 'http_flow late runtime failure converges to change_failed(http_flow_failed)',
+    run: testHttpFlowLateFailureConvergesToChangeFailed
   },
   {
     title: 'http_flow provider supports request retries and wait_until polling',
@@ -1024,6 +1352,22 @@ const CASES = [
   {
     title: 'changeip provider must be explicitly configured',
     run: testRequireProviderWhenChangeipEnabled
+  },
+  {
+    title: 'force=true clears a timed-out pending session and allows a new /changeip session to start',
+    run: testForceClearsTimedOutPendingSession
+  },
+  {
+    title: 'force=true clears a computed-timed-out pending session when timeout_at_ms is invalid',
+    run: testForceClearsComputedTimedOutPendingSessionWithInvalidTimeout
+  },
+  {
+    title: 'force=true refuses to clear a computed-not-timed-out pending session when timeout_at_ms is invalid',
+    run: testForceDoesNotClearComputedNotTimedOutPendingSessionWithInvalidTimeout
+  },
+  {
+    title: 'pending session does not emit change_failed when provider_started is false but no failure reason is recorded',
+    run: testPendingSessionDoesNotFailWhenProviderNotMarkedStartedYet
   },
   {
     title: 'timed-out pending session keeps retrying and raises stuck alert when ip-events returns 500',

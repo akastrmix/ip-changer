@@ -2,21 +2,9 @@ const httpClient = require('http');
 const httpsClient = require('https');
 const { URL } = require('url');
 const { normalizeMaxResponseBytes, readResponseText } = require('./responseText');
+const { createKeepAliveAgents } = require('./keepAliveAgents');
 
-const HTTP_KEEPALIVE_AGENT = new httpClient.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 1000,
-  maxSockets: 16,
-  maxFreeSockets: 4,
-  timeout: 60 * 1000
-});
-const HTTPS_KEEPALIVE_AGENT = new httpsClient.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 1000,
-  maxSockets: 16,
-  maxFreeSockets: 4,
-  timeout: 60 * 1000
-});
+const { httpAgent: HTTP_KEEPALIVE_AGENT, httpsAgent: HTTPS_KEEPALIVE_AGENT } = createKeepAliveAgents();
 
 const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 

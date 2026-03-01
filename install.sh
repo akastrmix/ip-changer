@@ -127,7 +127,7 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   REBOOT_DELAY_MINUTES="$(prompt_int_or_neg1 "重启延迟（分钟，-1 表示不重启）" "1" "1" "15")"
 fi
 
-read -rp "共享密钥 AUTH_TOKEN（留空则自动生成）: " AUTH_TOKEN
+read -rp "入站鉴权密钥 AUTH_TOKEN（留空则自动生成）: " AUTH_TOKEN
 if [ -z "$AUTH_TOKEN" ]; then
   if command -v openssl >/dev/null 2>&1; then
     AUTH_TOKEN="$(openssl rand -base64 32 | tr -d '=+/')"
@@ -141,14 +141,18 @@ DEFAULT_LABEL="$(hostname 2>/dev/null || echo "SERVER")"
 read -rp "服务器标识（用于多服务器区分）[默认 $DEFAULT_LABEL]: " SERVER_LABEL
 SERVER_LABEL="${SERVER_LABEL:-$DEFAULT_LABEL}"
 
-read -rp "播报目标（@channel 或 -100... chat_id，可留空）: " REPORT_CHANNEL
+read -rp "播报目标（@channel 或 -100... chat_id；留空=禁用频道播报）: " REPORT_CHANNEL
 
-read -rp "是否启用事件流上报到 CarpoolNotifier（/internal/ip-events）? [Y/n]: " IP_EVENTS_ENABLED_INPUT
-IP_EVENTS_ENABLED_INPUT="${IP_EVENTS_ENABLED_INPUT:-Y}"
 IP_EVENTS_ENABLED=1
-case "$(echo "$IP_EVENTS_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
-  n|no|0) IP_EVENTS_ENABLED=0 ;;
-esac
+if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
+  echo "提示：/changeip 依赖事件流上报，已自动启用 IP_EVENTS_ENABLED=1。"
+else
+  read -rp "是否启用事件流上报到 CarpoolNotifier（/internal/ip-events）? [Y/n]: " IP_EVENTS_ENABLED_INPUT
+  IP_EVENTS_ENABLED_INPUT="${IP_EVENTS_ENABLED_INPUT:-Y}"
+  case "$(echo "$IP_EVENTS_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
+    n|no|0) IP_EVENTS_ENABLED=0 ;;
+  esac
+fi
 
 IP_EVENTS_ENDPOINT=""
 IP_EVENTS_TOKEN=""
@@ -177,27 +181,26 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ] && [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
   exit 1
 fi
 
-read -rp "是否启用公网 IPv4 变化监测并上报到 CarpoolNotifier? [Y/n]: " IP_MONITOR_ENABLED_INPUT
-IP_MONITOR_ENABLED_INPUT="${IP_MONITOR_ENABLED_INPUT:-Y}"
-IP_MONITOR_ENABLED=1
-case "$(echo "$IP_MONITOR_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
-  n|no|0) IP_MONITOR_ENABLED=0 ;;
-esac
-
-if [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
-  IP_MONITOR_ENABLED=0
-fi
-
-IP_MONITOR_INTERVAL_SECONDS=""
-read -rp "是否启用公网 IPv6 变化监测并上报到 CarpoolNotifier? [y/N]: " IPV6_MONITOR_ENABLED_INPUT
-IPV6_MONITOR_ENABLED_INPUT="${IPV6_MONITOR_ENABLED_INPUT:-N}"
+IP_MONITOR_ENABLED=0
 IPV6_MONITOR_ENABLED=0
-case "$(echo "$IPV6_MONITOR_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
-  y|yes|1) IPV6_MONITOR_ENABLED=1 ;;
-esac
+IP_MONITOR_INTERVAL_SECONDS=""
 
-if [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
+if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
+  read -rp "是否启用公网 IPv4 变化监测并上报到 CarpoolNotifier? [Y/n]: " IP_MONITOR_ENABLED_INPUT
+  IP_MONITOR_ENABLED_INPUT="${IP_MONITOR_ENABLED_INPUT:-Y}"
+  IP_MONITOR_ENABLED=1
+  case "$(echo "$IP_MONITOR_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
+    n|no|0) IP_MONITOR_ENABLED=0 ;;
+  esac
+
+  read -rp "是否启用公网 IPv6 变化监测并上报到 CarpoolNotifier? [y/N]: " IPV6_MONITOR_ENABLED_INPUT
+  IPV6_MONITOR_ENABLED_INPUT="${IPV6_MONITOR_ENABLED_INPUT:-N}"
   IPV6_MONITOR_ENABLED=0
+  case "$(echo "$IPV6_MONITOR_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
+    y|yes|1) IPV6_MONITOR_ENABLED=1 ;;
+  esac
+else
+  echo "提示：未启用事件流上报（IP_EVENTS_ENABLED=0），IPv4/IPv6 监测上报已自动禁用。"
 fi
 
 IP_STATE_FILE="/var/lib/changeip-http/ip_state.json"
@@ -208,6 +211,57 @@ fi
 
 ENV_FILE="/etc/default/changeip-http"
 SERVICE_FILE="/etc/systemd/system/changeip-http.service"
+
+echo
+echo "=== 安装前配置预览 ==="
+echo "PORT: $PORT"
+echo "AUTH_TOKEN: 已设置（长度 ${#AUTH_TOKEN}）"
+echo "SERVER_LABEL: $SERVER_LABEL"
+echo "REPORT_CHANNEL: ${REPORT_CHANNEL:-<empty>}"
+if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
+  echo "CHANGEIP_ENABLED: 1"
+  echo "CHANGEIP_PROVIDER: $CHANGEIP_PROVIDER"
+  case "$CHANGEIP_PROVIDER" in
+    script)
+      echo "CHANGEIP_SCRIPT: $CHANGEIP_SCRIPT"
+      ;;
+    exec)
+      echo "CHANGEIP_EXEC_COMMAND: 已配置"
+      ;;
+    http_flow)
+      echo "CHANGEIP_HTTP_FLOW_FILE: $CHANGEIP_HTTP_FLOW_FILE"
+      ;;
+  esac
+  echo "REBOOT_DELAY_MINUTES: $REBOOT_DELAY_MINUTES"
+else
+  echo "CHANGEIP_ENABLED: 0"
+fi
+if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
+  echo "IP_EVENTS_ENABLED: 1"
+  echo "IP_EVENTS_ENDPOINT: $IP_EVENTS_ENDPOINT"
+  echo "IP_EVENTS_TOKEN: 已设置（长度 ${#IP_EVENTS_TOKEN}）"
+else
+  echo "IP_EVENTS_ENABLED: 0"
+fi
+if [ "$IP_EVENTS_ENABLED" -ne 1 ]; then
+  echo "IP_MONITOR_ENABLED: 0（未启用 ip-events，上报/监测不可用）"
+  echo "IPV6_MONITOR_ENABLED: 0（未启用 ip-events，上报/监测不可用）"
+else
+  echo "IP_MONITOR_ENABLED: $IP_MONITOR_ENABLED"
+  echo "IPV6_MONITOR_ENABLED: $IPV6_MONITOR_ENABLED"
+  if [ "$IP_MONITOR_ENABLED" -eq 1 ] || [ "$IPV6_MONITOR_ENABLED" -eq 1 ]; then
+    echo "IP_MONITOR_INTERVAL_SECONDS: $IP_MONITOR_INTERVAL_SECONDS"
+  fi
+fi
+echo
+read -rp "确认写入配置并重启服务? [Y/n]: " INSTALL_CONFIRM_INPUT
+INSTALL_CONFIRM_INPUT="${INSTALL_CONFIRM_INPUT:-Y}"
+case "$(echo "$INSTALL_CONFIRM_INPUT" | tr '[:upper:]' '[:lower:]')" in
+  n|no|0)
+    echo "已取消安装，未写入任何文件。"
+    exit 0
+    ;;
+esac
 
 echo "写入配置到 $ENV_FILE ..."
 {
@@ -357,3 +411,10 @@ if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
   echo "  wrangler secret put IP_EVENTS_TOKEN"
   echo "并填入上面的 IP_EVENTS_TOKEN"
 fi
+
+echo
+echo "排障常用命令："
+echo "  systemctl status changeip-http --no-pager"
+echo "  journalctl -u changeip-http -n 200 --no-pager"
+echo
+echo "安全提示：AUTH_TOKEN 属于密钥；若启用 ip-events，请同时妥善保存 IP_EVENTS_TOKEN。"

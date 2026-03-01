@@ -50,16 +50,19 @@ CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容
 
 - `POST /changeip`
 - JSON `{ "token": "<AUTH_TOKEN>" }`
+  - 可选：`{ "force": true }` 用于清理“已超时”的会话并重新触发（一般仅用于人工排障；bot 默认不应使用）
+    - 若会话超时字段损坏，会基于 `started_at` + 当前配置推导超时；仅在确认已超时后才会清理
 
 返回（节选）：
 
-- `reboot_scheduled`：是否安排重启
-- `reboot_delay_minutes`：重启延迟分钟；当 `REBOOT_DELAY_MINUTES=-1` 时返回 `-1`
+- `reboot_schedule_requested`：是否计划安排重启（`REBOOT_DELAY_MINUTES!=-1`）
+- `reboot_delay_minutes`：计划的重启延迟分钟；当 `REBOOT_DELAY_MINUTES=-1` 时为 `-1`
 
 说明：
 
 - 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，provider 触发仍会执行，但**不会**执行重启。
 - 若该 VPS 已有进行中的换 IP 会话，`/changeip` 会返回 `409 change already in progress`，并携带现有 `op_id`（CarpoolNotifier 应按“已在进行中”处理，而不是重复触发）。
+- `/changeip` 的 `ok=true` 表示“触发已接受”，不保证此时 provider 已完成启动探测；provider 启动/终态以 `change_*` 事件为准。
 
 ### 2.2 `/info` 查询
 
@@ -104,7 +107,7 @@ VPS 侧配置：
 与 `IP_MONITOR_*` 的关系：
 
 - `IP_MONITOR_ENABLED=1`：启用“自然变化”监测，但上报事件改为 `ipv4_changed`（仍然只在变化时上报）
-- `IPV6_MONITOR_ENABLED=1`：启用 IPv6 自然变化监测，上报事件为 `ipv6_changed`（仅记录到 iplog，不做额外播报）
+- `IPV6_MONITOR_ENABLED=1`：启用 IPv6 自然变化监测，上报事件为 `ipv6_changed`（记录到 iplog，并通知管理员；不向频道播报）
 - “换 IP 会话”的状态上报使用 `change_*` 事件，即使最终 IP 没变也要上报 `change_no_change`/`change_failed`
 
 重要建议：
@@ -114,7 +117,7 @@ VPS 侧配置：
 
 判定规则（v1，与你确认的口径一致）：
 
-- provider 成功触发后会尽快上报 `change_started`（若瞬时上报失败，监测流程会按 pending 会话补发）
+- provider 成功触发后会尽快上报 `change_started`（best-effort；允许延迟/丢失；CarpoolNotifier 不依赖该事件来触发“开始更换”播报，而是以调用 `POST /changeip` 成功为准）
 - provider 启动探测失败时会上报 `change_failed`；若首次上报失败，会保留 pending 会话并重试同一 `change_failed`（`reason` 不变）
 - `change_*` 终态事件上报带短重试（最多 3 次，带退避抖动）；`ipv4_changed/ipv6_changed` 自然事件保持单次上报
 - 若 `pending_change` 字段不合法，会尝试上报 `change_failed(invalid_pending_*)`，成功后清理会话
@@ -128,7 +131,7 @@ VPS 侧配置：
   - `== old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
     - 若不重启（`REBOOT_DELAY_MINUTES=-1`）：为避免 provider 执行中误判，会等待一次断网/恢复或超时后才判定 `change_no_change`
-- 10 分钟内始终拿不到公网 IPv4 → `change_failed`（`no_ipv4_observed`）
+- 30 分钟内始终拿不到公网 IPv4 → `change_failed`（`no_ipv4_observed`）
 
 补充：`op_id`
 
@@ -165,7 +168,7 @@ VPS 侧配置：
 2. `ip-changer` 调用 Worker `/internal/ip-events`（`event=ipv4_changed` 或 `event=ipv6_changed`）
 3. CarpoolNotifier：
    - `ipv4_changed`：保留现有行为（会话编辑/频道与管理员通知/冷却锁）
-   - `ipv6_changed`：仅记录到 `iplog` 事件日志，不触发额外广播
+   - `ipv6_changed`：记录到 `iplog` 事件日志，并通知管理员；不向频道播报
 
 ### 4.2 机器人触发换 IP（provider + 可选重启）
 
@@ -181,3 +184,24 @@ VPS 侧配置：
 - Worker 返回 `401 unauthorized`：`IP_EVENTS_TOKEN` 不一致
 - `ip-changer /info` 或 `/changeip` 返回 `403`：`AUTH_TOKEN` 不一致或 `/changeip` 未启用
 - 频道无消息：bot 未进频道/无权限，或 `REPORT_CHANNEL` 填写格式不对
+
+## 6. 跨仓库变更清单（强制）
+
+本仓库与 CarpoolNotifier 通过接口 + 事件契约耦合：**任何一侧改动契约语义，都必须同步改另一侧**，否则一定会出现“事件被拒收/会话不收敛/频道不更新”等线上问题。
+
+触发联动的常见改动：
+
+- `/changeip` 或 `/info`：返回字段/语义/错误码/鉴权（含 `ok`/`op_id`/`provider_error_code`/`ip_events_contract_version`）
+- ip-events：`contract_version`、事件类型枚举、必填字段、幂等键（`server_label + op_id + event`）、乱序/终态优先规则
+- `change_failed.reason` 的列表或语义（会影响 bot 文案与告警分流）
+- `REPORT_CHANNEL` “允许为空=禁用频道播报”的语义
+
+快速定位（对接文件）：
+
+- 本仓库：`docs/SPEC.md`、`src/contracts/ipEvents.js`
+- CarpoolNotifier：`docs/IP_CHANGER.md`、`docs/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`
+
+交付前必须跑：
+
+- 本仓库：`node scripts/changeip_regression.js`
+- CarpoolNotifier：`bash scripts/check.sh`

@@ -1,9 +1,23 @@
 const { fetchPublicIpv4, isValidIpv4 } = require('../ip/ipv4');
 const { fetchPublicIpv6, isValidIpv6 } = require('../ip/ipv6');
 const { loadIpState, saveIpState } = require('../state');
-const { makeIpv4OpId, makeIpv6OpId } = require('../opId');
+const { isValidOpId, makeIpv4OpId, makeIpv6OpId } = require('../opId');
 const { postIpEvent } = require('../network/ipEvents');
 const { nowIso } = require('../change/session');
+
+function clearPendingNaturalChange(state, {
+  pendingOpIdField,
+  pendingOldField,
+  pendingNewField
+}) {
+  if (!state || typeof state !== 'object') return;
+  const fields = [pendingOpIdField, pendingOldField, pendingNewField].filter(Boolean);
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(state, field)) {
+      delete state[field];
+    }
+  }
+}
 
 async function handleNaturalMonitor({
   config,
@@ -17,7 +31,10 @@ async function handleNaturalMonitor({
   oldField,
   newField,
   lastReportAtField,
-  lastReportErrorField
+  lastReportErrorField,
+  pendingOpIdField,
+  pendingOldField,
+  pendingNewField
 }) {
   if (!enabled) return { ok: true, skipped: true };
   if (!config.ipEventsActive) return { ok: false, error: 'ip events not configured' };
@@ -35,18 +52,54 @@ async function handleNaturalMonitor({
     state[notifiedField] = ip;
     state[observedField] = ip;
     state.updated_at = nowIso();
+    clearPendingNaturalChange(state, { pendingOpIdField, pendingOldField, pendingNewField });
     const saved = saveIpState(config, state);
     if (!saved.ok) {
       return { ok: false, error: `failed to persist ip state: ${saved.error}` };
     }
     return { ok: true, initialized: true };
   }
-  if (ip === notified) return { ok: true, unchanged: true };
+
+  if (ip === notified) {
+    const hasPending = isValidOpId(state[pendingOpIdField]) ||
+      String(state[pendingOldField] || '').trim() ||
+      String(state[pendingNewField] || '').trim();
+    if (!hasPending) return { ok: true, unchanged: true };
+
+    clearPendingNaturalChange(state, { pendingOpIdField, pendingOldField, pendingNewField });
+    state[observedField] = ip;
+    state.updated_at = nowIso();
+    const saved = saveIpState(config, state);
+    if (!saved.ok) {
+      return { ok: false, error: `failed to persist ip state: ${saved.error}` };
+    }
+    return { ok: true, unchanged: true, cleared_pending: true };
+  }
+
+  let opId = '';
+  const pendingOpId = String(state[pendingOpIdField] || '').trim();
+  const pendingOld = String(state[pendingOldField] || '').trim();
+  const pendingNew = String(state[pendingNewField] || '').trim();
+  const canReusePending = isValidOpId(pendingOpId) && pendingOld === notified && pendingNew === ip;
+  if (canReusePending) {
+    opId = pendingOpId;
+  } else {
+    opId = makeOpId(config.serverLabel, new Date());
+    state[pendingOpIdField] = opId;
+    state[pendingOldField] = notified;
+    state[pendingNewField] = ip;
+    state[observedField] = ip;
+    state.updated_at = nowIso();
+    const saved = saveIpState(config, state);
+    if (!saved.ok) {
+      return { ok: false, error: `failed to persist ip state: ${saved.error}` };
+    }
+  }
 
   const payload = {
     server_label: config.serverLabel,
     channel: config.reportChannel,
-    op_id: makeOpId(config.serverLabel, new Date()),
+    op_id: opId,
     ts: nowIso(),
     event
   };
@@ -64,6 +117,7 @@ async function handleNaturalMonitor({
   state.updated_at = nowIso();
   if (result.ok) {
     state[notifiedField] = ip;
+    clearPendingNaturalChange(state, { pendingOpIdField, pendingOldField, pendingNewField });
     state[lastReportAtField] = state.updated_at;
     state[lastReportErrorField] = '';
   } else {
@@ -89,7 +143,10 @@ async function handleNaturalIpv4Monitor(config) {
     oldField: 'old_ipv4',
     newField: 'new_ipv4',
     lastReportAtField: 'last_report_at',
-    lastReportErrorField: 'last_report_error'
+    lastReportErrorField: 'last_report_error',
+    pendingOpIdField: 'pending_ipv4_op_id',
+    pendingOldField: 'pending_ipv4_old_ipv4',
+    pendingNewField: 'pending_ipv4_new_ipv4'
   });
 }
 
@@ -106,11 +163,17 @@ async function handleNaturalIpv6Monitor(config) {
     oldField: 'old_ipv6',
     newField: 'new_ipv6',
     lastReportAtField: 'last_report_at_ipv6',
-    lastReportErrorField: 'last_report_error_ipv6'
+    lastReportErrorField: 'last_report_error_ipv6',
+    pendingOpIdField: 'pending_ipv6_op_id',
+    pendingOldField: 'pending_ipv6_old_ipv6',
+    pendingNewField: 'pending_ipv6_new_ipv6'
   });
 }
 
 module.exports = {
   handleNaturalIpv4Monitor,
-  handleNaturalIpv6Monitor
+  handleNaturalIpv6Monitor,
+  _test: {
+    handleNaturalMonitor
+  }
 };

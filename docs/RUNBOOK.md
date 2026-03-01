@@ -19,7 +19,7 @@
   - `exec`：`CHANGEIP_EXEC_COMMAND`
   - `http_flow`：`CHANGEIP_HTTP_FLOW_FILE`（可参考 `flows/samples/ippanel.boil.network.sample.json`）
 - 开启 IPv4 监测上报（推荐，用于自动播报与会话编辑）
-- 可选开启 IPv6 监测上报（当前仅记日志，不做额外播报）
+- 可选开启 IPv6 监测上报（写入 iplog 并通知管理员；不向频道播报）
 
 若使用 boil 面板：请同时阅读 `docs/BOIL_FLOW.md`（包含变量映射、重试策略与“串台”排障建议）。
 
@@ -50,9 +50,14 @@ chmod +x install.sh uninstall.sh
 
 安装脚本会：
 
+- 在写入前展示配置预览并二次确认（确认后才会写入并重启）
 - 写入 `/etc/default/changeip-http`
 - 写入 `/etc/systemd/system/changeip-http.service`
 - `systemctl enable changeip-http && systemctl restart changeip-http`
+
+补充：若你启用了 `/changeip`，安装脚本会自动启用 `IP_EVENTS_ENABLED=1`，并继续要求填写 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN`。
+
+注意：`./install.sh` 每次执行都会完整覆盖 `/etc/default/changeip-http`，不会保留旧文件中的额外自定义环境变量。
 
 ## 3. 修改配置
 
@@ -69,6 +74,7 @@ systemctl restart changeip-http
 提示：
 
 - 重新运行 `./install.sh` 也可以“重写配置文件并重启”，但会提示你重新输入参数；若你不想改 bot/worker 配置，务必沿用原 token。
+- `./install.sh` 会完整重写 `/etc/default/changeip-http`。如果你手工加过自定义变量（例如 provider 所需变量），请先备份并在安装后恢复。
 
 ## 4. 更新代码（GitHub 更新后）
 
@@ -88,6 +94,7 @@ cd /root/ip-changer
 卸载会删除：
 
 - `/etc/systemd/system/changeip-http.service`
+- `/etc/systemd/system/multi-user.target.wants/changeip-http.service`（由 `systemctl enable` 创建的自启 symlink）
 - `/etc/default/changeip-http`
 - `/var/lib/changeip-http`
 
@@ -145,13 +152,15 @@ curl -X POST http://127.0.0.1:8787/changeip -H 'Content-Type: application/json' 
 1) 检查关键变量是否齐全：
 
 ```bash
-grep -E 'CHANGEIP_PROVIDER|CHANGEIP_HTTP_FLOW_FILE|BOIL_ACCOUNT|BOIL_PASSWORD|BOIL_ROUTER_ID|BOIL_INTERFACE|REBOOT_DELAY_MINUTES' /etc/default/changeip-http
+grep -E 'CHANGEIP_PROVIDER|CHANGEIP_HTTP_FLOW_FILE|BOIL_ACCOUNT|BOIL_PASSWORD|REBOOT_DELAY_MINUTES|BOIL_ROUTER_ID|BOIL_INTERFACE' /etc/default/changeip-http
 ```
 
-2) 检查 flow 路径是否存在且是绝对路径（示例与生产不要混用）：
+说明：`BOIL_ROUTER_ID/BOIL_INTERFACE` 仅在你使用 sample 模板 flow 时需要；若使用 `HKT/HKBN` 拆分 flow，可不配置。
+
+2) 检查当前 `CHANGEIP_HTTP_FLOW_FILE` 指向的 flow 是否存在且是绝对路径（示例与生产不要混用）：
 
 ```bash
-ls -l /root/ip-changer/flows/ippanel.boil.network.json
+bash -lc '. /etc/default/changeip-http; echo "$CHANGEIP_HTTP_FLOW_FILE"; ls -l "$CHANGEIP_HTTP_FLOW_FILE"'
 ```
 
 3) 重启服务并确认启动正常：
@@ -212,15 +221,25 @@ journalctl -u changeip-http -n 200 --no-pager
 
 ### `/changeip` 返回 500
 
+说明：为适配“触发后立刻断网”的 provider，`/changeip` 通常会**先落盘会话并尽快返回 `200`**。因此：
+
+- `/changeip` 返回 `500` 更多表示“校验阶段失败”或“状态文件无法落盘”，而不是 provider 运行时失败。
+
+常见原因：
+
+- 未启用事件流上报（`IP_EVENTS_ENABLED=1` 且 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN` 配齐），会返回 `500 ip events not configured`
 - `CHANGEIP_PROVIDER` 未配置或取值非法（`script` / `exec` / `http_flow`）
-- 可优先查看响应字段 `provider_error_code`：`provider.unsupported` / `provider.config_invalid` / `provider.spawn_failed` / `provider.exited_early` / `provider.runtime_failed`
-- provider=`script` 时：`CHANGEIP_SCRIPT` 路径不合法（必须为绝对路径，且指向可读的常规文件）
-- provider=`script` 时：脚本创建进程失败（`failed to spawn changeip script`）
-- provider=`script` 时：脚本启动后立即异常退出（`changeip script exited early`）
-- provider=`exec` 时：命令为空/创建失败/启动后异常退出
-- provider=`http_flow` 时：flow 文件 JSON 非法、模板变量缺失，或在启动探测窗口内步骤失败
-- provider=`http_flow` 时：若 `/changeip` 已返回 `200`，后续后台步骤失败会写日志（例如 `background http_flow runtime error`），最终以 `change_*` 事件为准
+- 可优先查看响应字段 `provider_error_code`（仅校验失败时返回）：`provider.unsupported` / `provider.config_invalid`
+- provider=`script`：
+  - `CHANGEIP_SCRIPT` 路径不合法（必须为绝对路径，且指向可读的常规文件）
+- provider=`exec`：
+  - `CHANGEIP_EXEC_COMMAND` 为空
+- provider=`http_flow`：
+  - flow 文件不可读/JSON 非法
+  - 模板变量缺失/未知变量引用等“编译期”错误
 - 状态文件无法写入（`failed to persist change session`）
+
+如果 `/changeip` 返回 `200` 但随后很快出现 `change_failed(reason=spawn_failed|*_exited_early|http_flow_failed)`，请按日志与 `change_*` 事件排障（`journalctl -u changeip-http ...`），最终以 `change_*` 终态为准。
 
 ### `/changeip` 返回 409
 
@@ -250,7 +269,7 @@ journalctl -u changeip-http -n 200 --no-pager
    - `IP_EVENTS_ENDPOINT=https://<worker>/internal/ip-events`
    - `IP_EVENTS_TOKEN=<same as worker secret>`
    - `IP_MONITOR_ENABLED=1`（IPv4 监测）
-   - `IPV6_MONITOR_ENABLED=1`（可选，IPv6 监测；仅日志）
+   - `IPV6_MONITOR_ENABLED=1`（可选，IPv6 监测；写入 iplog 并通知管理员；不向频道播报）
 
 ## 10. 回归脚本（开发验证）
 

@@ -3,22 +3,10 @@ const https = require('https');
 const { URL } = require('url');
 
 const { normalizeMaxResponseBytes, readResponseText } = require('../../network/responseText');
+const { createKeepAliveAgents } = require('../../network/keepAliveAgents');
 const { buildCookieHeader, saveCookies } = require('./cookies');
 
-const HTTP_KEEPALIVE_AGENT = new http.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 1000,
-  maxSockets: 16,
-  maxFreeSockets: 4,
-  timeout: 60 * 1000
-});
-const HTTPS_KEEPALIVE_AGENT = new https.Agent({
-  keepAlive: true,
-  keepAliveMsecs: 1000,
-  maxSockets: 16,
-  maxFreeSockets: 4,
-  timeout: 60 * 1000
-});
+const { httpAgent: HTTP_KEEPALIVE_AGENT, httpsAgent: HTTPS_KEEPALIVE_AGENT } = createKeepAliveAgents();
 
 const DEFAULT_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 

@@ -1,3 +1,5 @@
+const { isValidOpId } = require('../opId');
+
 const IP_EVENTS_CONTRACT_VERSION = '2026-02-28.v1';
 const SUPPORTED_IP_EVENTS_CONTRACT_VERSIONS = Object.freeze([IP_EVENTS_CONTRACT_VERSION]);
 
@@ -30,13 +32,6 @@ function listMissingFields(fields, payload) {
     if (String(value ?? '').trim() === '') missing.push(field);
   }
   return missing;
-}
-
-function isValidOpId(value) {
-  const opId = String(value || '').trim();
-  if (!opId) return false;
-  if (opId.length > 64) return false;
-  return /^[A-Za-z0-9_-]+$/.test(opId);
 }
 
 function isValidTimestamp(value) {

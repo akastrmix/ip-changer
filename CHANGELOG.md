@@ -4,10 +4,16 @@
 
 ## Unreleased
 
+- （暂无）
+
+## 0.6.0
+
 - 重构：`src/` 目录按领域收敛为 `change/`、`monitor/`、`network/`、`contracts/`、`ip/`、`runtime/`，并补充模块地图 `docs/ARCHITECTURE.md`。
 - 强化：新增“超时 pending 会话 + ip-events 500/超时”故障注入回归用例，确保会话持续重试且 `pending_timeout_stuck_alerts_total` 指标可观测。
 - 新增：可选 IPv6 自然变化监测（`IPV6_MONITOR_ENABLED`，监测间隔复用 `IP_MONITOR_INTERVAL_SECONDS`），上报 `event=ipv6_changed`，并在 `/info` 返回 `notified_ipv6` / `ipv6_monitor_enabled`。
 - 语义保持：`/changeip` 会话判定与 `change_*` 事件仍只基于 IPv4。
+- 优化：自然 IPv4/IPv6 变化事件在上报失败重试时复用同一 `op_id`（`IP_STATE_FILE` 记录 pending `op_id + old/new`），降低短暂故障下的重复播报风险。
+- 修复：pending runner 在同一 tick 内 provider 启动后会基于最新会话状态尽快上报 `change_started`，避免在 `monitor_after_ms` 前被动延迟。
 - 优化：IPv6 检测源改为优先 IPv6 专用入口（`api6.ipify.org` 等），并增加启动可达性探测与错误日志节流（默认 5 分钟）以降低噪音。
 - 重构：监测模块拆分为 `src/monitor/` 子模块（pending/natural/scheduler/helpers），并统一自然 IPv4/IPv6 监测执行器，降低重复分支。
 - 重构：`http_flow` 编译器拆分为 `src/providers/httpFlow/compile/*` 子模块（shared/steps/flow），`compile.js` 保持兼容入口。

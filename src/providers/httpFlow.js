@@ -4,6 +4,7 @@ const { probeAsyncTaskStart, validateReadableRegularFile } = require('./utils');
 const { compileFlowFromFile } = require('./httpFlow/compile');
 const { runCompiledFlow } = require('./httpFlow/runtime');
 const { PROVIDER_ERROR_CODES, providerFailure, providerSuccess } = require('./errors');
+const { markChangeSessionProviderRuntimeFailed } = require('../change/session');
 
 const COMPILE_CACHE = new Map();
 const FLOW_START_PROBE_MS = 1500;
@@ -47,7 +48,7 @@ function compileFlowWithCache(filePath, env) {
   return { ok: true, flow: compiled.flow, cacheHit: false };
 }
 
-async function start(config) {
+async function start(config, ctx = {}) {
   const check = validate(config);
   if (!check.ok) {
     return providerFailure({
@@ -72,6 +73,13 @@ async function start(config) {
     onLateError: (err) => {
       const detail = String(err && err.message ? err.message : err);
       console.error(`[changeip-http] background http_flow runtime error: ${detail}`);
+      const opId = String(ctx?.opId || '').trim();
+      if (opId) {
+        markChangeSessionProviderRuntimeFailed(config, opId, {
+          reason: 'http_flow_failed',
+          reportError: detail
+        });
+      }
     }
   });
   if (!probe.ok) {

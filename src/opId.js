@@ -2,7 +2,7 @@ const crypto = require('crypto');
 
 function formatUtcCompact(date) {
   const iso = date.toISOString().replace(/\.\d{3}Z$/, 'Z');
-  return iso.replace(/[-:]/g, '').replace('Z', 'Z');
+  return iso.replace(/[-:]/g, '');
 }
 
 function normalizeLabel(label) {
@@ -37,7 +37,15 @@ function makeIpv6OpId(serverLabel, date = new Date()) {
   return `${ts}_${label}_ipv6_${randomSuffixHex(6)}`;
 }
 
+function isValidOpId(value) {
+  const opId = String(value || '').trim();
+  if (!opId) return false;
+  if (opId.length > 64) return false;
+  return /^[A-Za-z0-9_-]+$/.test(opId);
+}
+
 module.exports = {
+  isValidOpId,
   makeChangeOpId,
   makeIpv4OpId,
   makeIpv6OpId

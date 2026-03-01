@@ -6,13 +6,16 @@
 
 - `change/`
   - `trigger.js`：`/changeip` 触发入口编排。
-  - `session.js`：`pending_change.json` 生命周期与 `change_*` 事件 payload 组装。
+  - `session.js`：对外稳定入口（`pending_change.json` 生命周期、`change_*` 事件与会话落盘）。
+  - `session/`：`session.js` 的内部拆分模块（shared/store/mutations/payloads/events）。
 - `monitor/`
   - `start.js`：监测调度主循环。
   - `natural.js`：自然 IPv4/IPv6 监测与变化上报。
-  - `pending.js`：换 IP 会话收敛与超时处理。
+  - `pending.js`：换 IP 会话 runner 对外入口（内部模块见 `monitor/pending/`）。
+  - `pending/`：pending runner 内部模块（validate/provider/reboot/terminal/invalid/runner）。
   - `helpers.js`：调度时间与监测日志辅助函数。
 - `network/`
+  - `keepAliveAgents.js`：HTTP keep-alive agent 配置工厂（`http.js` 与 `http_flow` 共享，避免参数漂移）。
   - `http.js`：底层 HTTP 请求封装。
   - `responseText.js`：HTTP 响应体读取与大小保护（通用网络层与 `http_flow` 共享）。
   - `ipEvents.js`：ip-events 客户端（发送前本地契约校验）。

@@ -22,10 +22,10 @@ function getProvider(config) {
   return { ok: true, provider };
 }
 
-async function startProvider(config) {
+async function startProvider(config, ctx = {}) {
   const resolved = getProvider(config);
   if (!resolved.ok) return resolved;
-  return resolved.provider.start(config);
+  return resolved.provider.start(config, ctx);
 }
 
 module.exports = {

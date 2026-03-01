@@ -51,9 +51,10 @@
 - `exec` provider：准备可执行命令（`CHANGEIP_EXEC_COMMAND`）
 - `http_flow` provider：准备 flow JSON 文件（`CHANGEIP_HTTP_FLOW_FILE`）
 
-安装完成后，对服务器产生的**持久影响**仅包括：
+安装完成后，对服务器产生的**主要持久影响**包括：
 
 - 创建 systemd 单元：`/etc/systemd/system/changeip-http.service`
+- `systemctl enable changeip-http` 会创建开机自启的 symlink：`/etc/systemd/system/multi-user.target.wants/changeip-http.service`
 - 创建环境变量配置文件：`/etc/default/changeip-http`
 - （启用监测上报时）创建状态目录：`/var/lib/changeip-http`（用于保存上次已上报 IPv4/IPv6，卸载会删除）
 
@@ -139,6 +140,10 @@ apt install -y nodejs
       ```json
       { "token": "YOUR_SHARED_SECRET" }
       ```
+      可选（仅用于排障）：清理“已超时”的换 IP 会话并重新触发：
+      ```json
+      { "token": "YOUR_SHARED_SECRET", "force": true }
+      ```
     - 校验规则：
       - `token` 字段必须等于环境变量 `AUTH_TOKEN`。
       - 不满足则返回 `403`。
@@ -151,27 +156,24 @@ apt install -y nodejs
           "op_id": "20260128T061500Z_cmhk_7f2c0f"
         }
         ```
+        - 若请求体包含 `force:true` 且该会话已超时（优先使用 `timeout_at_ms`；必要时基于 `started_at` + 当前配置推导），会先清理旧会话再触发新会话（返回 `200`）
       - `CHANGEIP_PROVIDER` 在启用 `/changeip` 时必须显式配置（`script` / `exec` / `http_flow`）。
       - `script` provider：要求 `CHANGEIP_SCRIPT` 为可读常规文件（绝对路径）。
       - `exec` provider：要求 `CHANGEIP_EXEC_COMMAND` 非空。
-      - `http_flow` provider：要求 `CHANGEIP_HTTP_FLOW_FILE` 为可读常规文件（绝对路径，内容需为合法 flow JSON）。
+    - `http_flow` provider：要求 `CHANGEIP_HTTP_FLOW_FILE` 为可读常规文件（绝对路径，内容需为合法 flow JSON）。
     - 通过校验后：
-      - 根据 provider 后台触发对应换 IP 实现（脚本/命令/http_flow）
-      - 若 provider 启动失败，返回 `500`，并带稳定错误码字段：
+      - 会先落盘创建本次换 IP 的 `pending_change` 会话，并尽快返回 `200`（避免“触发后立刻断网”导致响应丢失）。
+      - 若创建会话时缺少基线 IPv4，会在后台异步尝试回填；该回填不会阻塞 `/changeip` 返回。
+      - provider 启动与可选重启安排由后台的 pending runner 执行；最终成功/失败以 `change_*` 事件为准。
+      - 若校验阶段失败（配置/资源不可用），返回 `500`，并带稳定错误码字段：
         ```json
         {
           "ok": false,
-          "error": "changeip script exited early",
-          "provider_error_code": "provider.exited_early"
+          "error": "changeip script not found",
+          "provider_error_code": "provider.config_invalid"
         }
         ```
-        `provider_error_code` 取值：`provider.unsupported` / `provider.config_invalid` / `provider.spawn_failed` / `provider.exited_early` / `provider.runtime_failed`
-      - 重启行为：
-        - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
-        - 否则安排系统重启：
-          ```bash
-          shutdown -r +<REBOOT_DELAY_MINUTES>
-          ```
+        `provider_error_code` 取值：`provider.unsupported` / `provider.config_invalid`
       - 返回：
         ```json
         {
@@ -182,12 +184,13 @@ apt install -y nodejs
           "server_label": "CMHK",
           "channel": "@your_channel",
           "old_ipv4": "1.2.3.4",
-          "reboot_scheduled": true,
+          "reboot_schedule_requested": true,
           "reboot_delay_minutes": 1
         }
         ```
+        `old_ipv4` 可能为 `null`（例如首次触发且尚未拿到基线时）。
     - 重要说明：
-      - `/changeip` 返回 `ok=true` 仅表示“本次触发请求被接受且 provider 已启动/通过启动探测”。
+      - `/changeip` 返回 `ok=true` 仅表示“本次触发请求被接受且会话已落盘，provider 启动已异步调度”。
       - 最终是否换 IP 成功，以后续事件 `change_succeeded` / `change_no_change` / `change_failed` 为准。
     - 资源防护（稳定性）：
       - 服务端显式设置 HTTP 超时（`request=300s`、`headers=60s`、`keep-alive=5s`），降低慢连接长期占用风险。
@@ -197,7 +200,7 @@ apt install -y nodejs
 
 所有行为均由以下环境变量控制（通过 `/etc/default/changeip-http` 配置）：
 
-- `AUTH_TOKEN`：共享密钥，必须设置。用于认证来自 Telegram 机器人的请求。
+- `AUTH_TOKEN`：入站鉴权密钥，必须设置。用于认证来自 Telegram 机器人的请求。
 - `PORT`：HTTP 监听端口（默认 `8787`）。
 - `CHANGEIP_ENABLED`：是否启用 `/changeip` 接口（`1` 启用，`0` 关闭）。
 - `CHANGEIP_PROVIDER`：`/changeip` provider（`script` / `exec` / `http_flow`；启用 `/changeip` 时必填）
@@ -213,6 +216,10 @@ apt install -y nodejs
 - 推荐从示例文件开始改：`flows/samples/ippanel.boil.network.sample.json`
 - 路径迁移提示：旧路径 `flows/ippanel.boil.network.sample.json` 已废弃，请改用 `flows/samples/ippanel.boil.network.sample.json`
 - 若你使用 boil 面板，建议同时阅读：`docs/BOIL_FLOW.md`
+- boil 现成生产 flow（按服务器拆分）：
+  - `flows/ippanel.boil.network.HKT.json`
+  - `flows/ippanel.boil.network.HKBN.json`
+- 使用上述按服务器拆分的 flow 时，通常只需要 `BOIL_ACCOUNT/BOIL_PASSWORD`；`router_id/interface` 已固定在 flow 文件中。
 - 支持步骤类型：
   - `request`：发送 HTTP 请求（支持 `json` / `form` / `body`）
   - `wait_until`：按固定间隔轮询请求，直到断言通过或超时（`timeout_ms` 为硬超时）
@@ -228,7 +235,7 @@ apt install -y nodejs
   - `request`：要轮询的请求对象（同 `request` 步骤字段）
   - `assert`：判断条件（同 `assert` 步骤字段）
   - `timeout_ms` / `interval_ms`：总超时与轮询间隔
-- `http_flow` 采用“启动探测窗口”（约 `1.5s`）：若在窗口内即失败，`/changeip` 会直接返回 `500`；若已通过窗口后在后台步骤失败，会记录日志并由后续 `change_*` 事件给出最终结果。
+- `http_flow` 采用“启动探测窗口”（约 `1.5s`）：用于尽快识别“启动就失败”的情况并把会话标记为 `change_failed(http_flow_failed)`；`/changeip` 通常已在此之前返回 `200`。
 - 支持变量模板：
   - `${var_name}`：引用 flow 内变量
   - `${ENV:VAR_NAME}`：引用系统环境变量（推荐用于账号密码）
@@ -262,7 +269,7 @@ apt install -y nodejs
 - `IP_EVENTS_TOKEN`：上报鉴权密钥（HTTP Header：`Authorization: Bearer <token>`）
 - `CHANGE_MONITOR_START_DELAY_SECONDS`：触发 provider 后延迟多久开始判定（默认 `30`；有重启时会叠加到预计重启后）
 - `CHANGE_MONITOR_INTERVAL_SECONDS`：换 IP 会话进行中的判定间隔（默认 `10`）
-- `CHANGE_MONITOR_TIMEOUT_SECONDS`：换 IP 会话超时（默认 `600`）
+- `CHANGE_MONITOR_TIMEOUT_SECONDS`：换 IP 会话超时（默认 `1800`）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
 - `REPORT_CHANNEL`：播报目标（支持 `@channel_username` 或私有频道/超级群 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员）
 
@@ -322,6 +329,9 @@ chmod +x install.sh uninstall.sh
 ./install.sh
 ```
 
+> 注意：`install.sh` 每次执行都会**完整重写** `/etc/default/changeip-http`。  
+> 若你在该文件里手工添加过自定义环境变量（例如 provider 依赖变量），重装前请先备份并在安装后恢复。
+
 安装脚本会进行以下操作：
 
 1. 检查是否以 `root` 身份运行。
@@ -335,10 +345,11 @@ chmod +x install.sh uninstall.sh
      - provider=`exec`：输入 `CHANGEIP_EXEC_COMMAND`
      - provider=`http_flow`：输入 `CHANGEIP_HTTP_FLOW_FILE`
      - 重启延迟分钟数（默认 `1`；输入 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）
-   - 共享密钥 `AUTH_TOKEN`（留空则自动生成）
+     - 事件流上报会自动启用（`IP_EVENTS_ENABLED=1`）
+   - 入站鉴权密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
-   - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空）
-   - 是否启用事件流上报（ip-events）
+   - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空=禁用频道播报）
+   - 若未启用 `/changeip`：是否启用事件流上报（ip-events）
    - 若启用事件流上报：
      - 上报地址 `IP_EVENTS_ENDPOINT`（CarpoolNotifier 内部接口：`/internal/ip-events`）
      - 上报密钥 `IP_EVENTS_TOKEN`（留空则自动生成）
@@ -346,9 +357,10 @@ chmod +x install.sh uninstall.sh
    - 若启用 IPv4 或 IPv6 变化监测：
      - 检测间隔秒数（默认 `60`）
    - 是否启用 IPv6 变化监测（仅在变化时上报，默认关闭；监测间隔复用 IPv4 的 `IP_MONITOR_INTERVAL_SECONDS`）
-4. 创建环境配置文件：`/etc/default/changeip-http`
-5. 创建 systemd 服务：`/etc/systemd/system/changeip-http.service`
-6. 运行：
+4. 展示配置预览并二次确认（确认后才会写入文件和重启服务）
+5. 创建环境配置文件：`/etc/default/changeip-http`
+6. 创建 systemd 服务：`/etc/systemd/system/changeip-http.service`
+7. 运行：
    - `systemctl daemon-reload`
    - `systemctl enable changeip-http`
    - `systemctl restart changeip-http`
@@ -393,7 +405,7 @@ curl -X POST "http://127.0.0.1:8787/changeip" \
   -d '{"token":"<YOUR_TOKEN>"}'
 ```
 
-看到 `ok: true` 代表本次触发已被接受；最终是否换 IP 成功需以后续 `change_*` 事件为准。若返回里 `reboot_scheduled=true` 说明会重启，`reboot_scheduled=false` 则不会重启（注意这会触发实际的换 IP 逻辑，请谨慎测试）。
+看到 `ok: true` 代表本次触发已被接受；最终是否换 IP 成功需以后续 `change_*` 事件为准。若返回里 `reboot_schedule_requested=true` 说明计划安排重启（实际是否成功安排以日志与终态事件为准），`reboot_delay_minutes` 为计划的延迟分钟（注意这会触发实际的换 IP 逻辑，请谨慎测试）。
 
 ---
 
@@ -453,7 +465,7 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 > - 尽量只在内网或受控网络中开放该端口（如通过防火墙限制来源 IP）。
 > - `AUTH_TOKEN` 要足够随机且保密，只在 CarpoolNotifier 环境变量和安装日志（你自己留存）中使用。
 
-### 6.1 IP 事件流对接（IPv4 播报 + IPv6 记录）
+### 6.1 IP 事件流对接（IPv4 播报 + IPv6 管理员通知）
 
 `ip-changer` 会向 CarpoolNotifier 的内部接口上报事件流（自然变化 + 换 IP 状态），因此你需要在 Cloudflare Worker 中配置密钥：
 
@@ -467,7 +479,7 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 随后：
 
 - 当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会按既有逻辑播报/通知。
-- 当 VPS 公网 IPv6 发生变化时，CarpoolNotifier 仅写入 `iplog` 事件日志，不做额外播报。
+- 当 VPS 公网 IPv6 发生变化时，CarpoolNotifier 会写入 `iplog` 事件日志并通知管理员（不向频道播报）。
 
 ---
 
@@ -483,7 +495,8 @@ git pull
 systemctl restart changeip-http
 ```
 
-即可让新版本生效。无需重新运行 `install.sh`，除非你想修改端口、脚本路径等基础配置。
+即可让新版本生效。无需重新运行 `install.sh`，除非你想修改端口、脚本路径等基础配置。  
+若你选择重跑 `install.sh`：脚本会完整覆盖 `/etc/default/changeip-http`，不会保留旧文件中的额外自定义项。
 
 ### 7.2 修改配置
 
@@ -541,8 +554,8 @@ node scripts/changeip_regression.js
 - 并发请求 `/changeip`（`script` 与 `exec` provider）：只允许 1 个成功，其余返回 `409`
 - `CHANGEIP_SCRIPT` 相对路径：返回 `500 changeip script path must be absolute`
 - `CHANGEIP_SCRIPT` 非常规文件：返回 `500 changeip script is not a regular file`
-- 脚本快速异常退出：返回 `500 changeip script exited early`，在 `ip-events` 可达时会及时清理 `pending_change.json`
-- `exec` 命令快速异常退出：返回 `500 changeip exec command exited early`，在 `ip-events` 可达时会及时清理 `pending_change.json`
+- 脚本快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=script_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
+- `exec` 命令快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=exec_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - 脚本快速异常退出 + 首次 `change_failed` 上报被拒：会保留 `pending_change.json` 并由监测循环重试同一终态，成功后再清理
 - 旧/不完整 `pending_change.json`：不会做兼容补全；会先尝试上报 `change_failed(invalid_pending_*)`，成功后清理（若上报不可达则保留并重试）；若缺少可用 `op_id` 则直接清理
 - `http_flow` provider：验证“登录 + 重定向 + 触发动作”流程（含 cookie 会话与变量提取）

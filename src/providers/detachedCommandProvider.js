@@ -14,7 +14,7 @@ function createDetachedCommandProvider({
     throw new Error('createDetachedCommandProvider: buildSpawnSpec must be a function');
   }
 
-  async function start(config) {
+  async function start(config, _ctx = {}) {
     const check = validate(config);
     if (!check.ok) {
       return providerFailure({

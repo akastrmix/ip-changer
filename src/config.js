@@ -98,7 +98,7 @@ function loadConfigFromEnv(env = process.env) {
 
   const changeMonitorStartDelaySeconds = parsePositiveInt(env.CHANGE_MONITOR_START_DELAY_SECONDS, 30, { min: 0, max: 3600 });
   const changeMonitorIntervalSeconds = parsePositiveInt(env.CHANGE_MONITOR_INTERVAL_SECONDS, 10, { min: 1, max: 3600 });
-  const changeMonitorTimeoutSeconds = parsePositiveInt(env.CHANGE_MONITOR_TIMEOUT_SECONDS, 600, { min: 10, max: 24 * 60 * 60 });
+  const changeMonitorTimeoutSeconds = parsePositiveInt(env.CHANGE_MONITOR_TIMEOUT_SECONDS, 1800, { min: 10, max: 24 * 60 * 60 });
 
   return {
     port,
