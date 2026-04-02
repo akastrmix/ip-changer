@@ -1,10 +1,10 @@
 const { isValidIpv4 } = require('../../ip/ipv4');
-const { nowIso, resolveChangeSessionChannel } = require('./shared');
+const { nowIso } = require('./shared');
 
 function buildChangeStartedPayload(config, pending) {
   const payload = {
     server_label: String(pending?.server_label || '').trim() || config.serverLabel,
-    channel: resolveChangeSessionChannel(config, pending),
+    channel: String(pending?.channel || '').trim(),
     op_id: pending.op_id,
     ts: pending.started_at,
     event: 'change_started'

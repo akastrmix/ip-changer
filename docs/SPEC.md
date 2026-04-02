@@ -72,7 +72,7 @@ HTTP 服务：
 - `IPV6_MONITOR_ENABLED`：`1/0`（IPv6，默认 `0`）
 - `IP_STATE_FILE`：状态文件（默认 `/var/lib/changeip-http/ip_state.json`）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
-- `REPORT_CHANNEL`：播报目标（`@channel` 或私有频道 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员）
+- `REPORT_CHANNEL`：播报目标（`@channel` 或负数 chat_id，常见为 `-100...`；可留空表示不向频道播报，仅通知管理员；格式非法会在配置加载阶段直接拒绝）
 
 事件流上报（破坏性更新：唯一上报入口）：
 
@@ -142,7 +142,7 @@ HTTP 防护约束（资源与稳定性）：
   - `ip_events_enabled`：事件流上报是否可用（`IP_EVENTS_ENABLED=1` 且 endpoint/token 均非空）
   - `ip_monitor_enabled`：只有监测真正“可用”时为 true（即 `IP_MONITOR_ENABLED=1` 且 `IP_EVENTS_*` 配置齐全）
   - `ipv6_monitor_enabled`：只有 IPv6 监测真正“可用”时为 true（即 `IPV6_MONITOR_ENABLED=1` 且 `IP_EVENTS_*` 配置齐全）
-  - `ip_events_contract_version`：当前上报使用的契约版本（例如 `2026-02-28.v1`）
+  - `ip_events_contract_version`：当前上报使用的契约版本（例如 `2026-04-03.v1`）
   - `ip_events_contract_versions_supported`：当前支持的契约版本列表
   - `notified_ipv4`：状态文件中的 `notified_ipv4`（可能为 `null`）
   - `notified_ipv6`：状态文件中的 `notified_ipv6`（可能为 `null`）
@@ -237,13 +237,18 @@ Header：
 
 JSON Body：
 
+- `channel` 为必带字段
+  - 值只能是 `@xxx`、负数 chat_id（常见为 `-100...`）或空字符串
+  - 空字符串表示禁用频道播报
+  - `ip-changer` 不再发送“省略 channel”的旧 payload
+
 ```json
 {
   "server_label": "HKT",
   "channel": "-1001234567890",
   "op_id": "20260128T061500Z_hkt_ipv4_7f2c0f",
   "ts": "2025-12-17T08:00:00.000Z",
-  "contract_version": "2026-02-28.v1",
+  "contract_version": "2026-04-03.v1",
   "event": "ipv4_changed",
   "old_ipv4": "1.2.3.4",
   "new_ipv4": "5.6.7.8"
@@ -258,7 +263,7 @@ IPv6 自然变化事件示例：
   "channel": "-1001234567890",
   "op_id": "20260128T061500Z_hkt_ipv6_7f2c0f",
   "ts": "2025-12-17T08:00:00.000Z",
-  "contract_version": "2026-02-28.v1",
+  "contract_version": "2026-04-03.v1",
   "event": "ipv6_changed",
   "old_ipv6": "240e:3a1:1000::10",
   "new_ipv6": "240e:3a1:1000::11"

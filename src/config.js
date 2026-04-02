@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const { isValidEventChannel, normalizeEventChannel } = require('./contracts/ipEvents');
 
 const CHANGEIP_PROVIDERS = new Set(['script', 'exec', 'http_flow']);
 
@@ -54,12 +55,20 @@ function requireNonEmpty(label, value) {
   return text;
 }
 
+function requireValidReportChannel(value) {
+  const channel = normalizeEventChannel(value);
+  if (!isValidEventChannel(channel)) {
+    throw new Error('REPORT_CHANNEL must be @channel_username, negative chat_id, or empty');
+  }
+  return channel;
+}
+
 function loadConfigFromEnv(env = process.env) {
   const port = parsePositiveInt(env.PORT, 8787, { min: 1, max: 65535 });
   const authToken = requireNonEmpty('AUTH_TOKEN', env.AUTH_TOKEN);
 
   const serverLabel = String(env.SERVER_LABEL || '').trim() || 'SERVER';
-  const reportChannel = String(env.REPORT_CHANNEL || '').trim();
+  const reportChannel = requireValidReportChannel(env.REPORT_CHANNEL);
 
   const changeipEnabled = parseBool(env.CHANGEIP_ENABLED ?? '0');
   const changeipProvider = String(env.CHANGEIP_PROVIDER || '').trim().toLowerCase();

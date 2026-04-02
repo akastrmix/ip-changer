@@ -42,19 +42,9 @@ function resolvePendingSessionContext(config, pending) {
   };
 }
 
-function resolveChangeSessionChannel(config, pending) {
-  // Preserve explicit empty channel (channel broadcast disabled) for the lifetime of the session.
-  if (pending && Object.prototype.hasOwnProperty.call(pending, 'channel')) {
-    return String(pending.channel || '').trim();
-  }
-  return String(config.reportChannel || '').trim();
-}
-
 module.exports = {
   isSameOp,
   isValidRebootDelayMinutes,
   nowIso,
-  resolveChangeSessionChannel,
   resolvePendingSessionContext
 };
-

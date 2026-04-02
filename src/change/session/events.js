@@ -1,6 +1,6 @@
 const { postIpEvent } = require('../../network/ipEvents');
 const { loadChangeSession } = require('./store');
-const { isSameOp, resolveChangeSessionChannel } = require('./shared');
+const { isSameOp } = require('./shared');
 const { recordChangeSessionError, markChangeSessionStarted } = require('./mutations');
 const { buildChangeStartedPayload, buildChangeTerminalPayload } = require('./payloads');
 
@@ -36,7 +36,9 @@ async function sendChangeStartedEvent(config, opId) {
 
 async function sendChangeFailedEvent(config, { opId, oldIpv4, reason }) {
   const current = loadChangeSession(config);
-  const channel = isSameOp(current, opId) ? resolveChangeSessionChannel(config, current) : String(config.reportChannel || '').trim();
+  const channel = isSameOp(current, opId)
+    ? String(current?.channel || '').trim()
+    : String(config.reportChannel || '').trim();
   try {
     return await postIpEvent(config, buildChangeTerminalPayload({
       opId,

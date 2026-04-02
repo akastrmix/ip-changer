@@ -2,8 +2,7 @@ const {
   buildChangeTerminalPayload,
   clearChangeSession,
   clearChangeSessionIfCurrent,
-  recordChangeSessionError,
-  resolveChangeSessionChannel
+  recordChangeSessionError
 } = require('../../change/session');
 const { postTerminalEventAndHandleSession, isTerminalSentRemembered, forgetTerminalSent } = require('./terminal');
 
@@ -34,7 +33,7 @@ async function handleInvalidPendingSession(config, pending, reason) {
   const terminal = buildChangeTerminalPayload({
     opId,
     serverLabel: String(pending?.server_label || '').trim() || config.serverLabel,
-    channel: resolveChangeSessionChannel(config, pending),
+    channel: String(pending?.channel || '').trim(),
     oldIpv4: pending?.old_ipv4,
     event: 'change_failed',
     reason

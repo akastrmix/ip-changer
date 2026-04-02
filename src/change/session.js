@@ -1,7 +1,6 @@
 const {
   isSameOp,
   nowIso,
-  resolveChangeSessionChannel,
   resolvePendingSessionContext
 } = require('./session/shared');
 const {
@@ -46,7 +45,6 @@ module.exports = {
   markChangeSessionRebootScheduleAttempted,
   nowIso,
   recordChangeSessionError,
-  resolveChangeSessionChannel,
   resolvePendingSessionContext,
   sendChangeFailedEvent,
   sendChangeStartedEvent,

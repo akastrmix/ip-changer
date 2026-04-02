@@ -1,6 +1,6 @@
 const { isValidOpId } = require('../opId');
 
-const IP_EVENTS_CONTRACT_VERSION = '2026-02-28.v1';
+const IP_EVENTS_CONTRACT_VERSION = '2026-04-03.v1';
 const SUPPORTED_IP_EVENTS_CONTRACT_VERSIONS = Object.freeze([IP_EVENTS_CONTRACT_VERSION]);
 
 const IP_EVENT_TYPES = Object.freeze({
@@ -15,6 +15,7 @@ const IP_EVENT_TYPES = Object.freeze({
 const ALLOWED_IP_EVENTS = Object.freeze(Object.values(IP_EVENT_TYPES));
 const ALLOWED_IP_EVENT_SET = new Set(ALLOWED_IP_EVENTS);
 const COMMON_REQUIRED_FIELDS = Object.freeze(['server_label', 'op_id', 'ts', 'contract_version']);
+const COMMON_REQUIRED_PRESENCE_FIELDS = Object.freeze(['channel']);
 
 const REQUIRED_FIELDS_BY_EVENT = Object.freeze({
   [IP_EVENT_TYPES.IPV4_CHANGED]: Object.freeze(['old_ipv4', 'new_ipv4']),
@@ -41,6 +42,16 @@ function isValidTimestamp(value) {
   return Number.isFinite(ms);
 }
 
+function isValidChannel(value) {
+  const text = String(value ?? '').trim();
+  if (text === '') return true;
+  if (text.startsWith('@')) {
+    const username = text.slice(1);
+    return /^[A-Za-z0-9_]{5,64}$/.test(username);
+  }
+  return /^-\d{5,20}$/.test(text);
+}
+
 function listMissingRequiredFields(event, payload) {
   const required = REQUIRED_FIELDS_BY_EVENT[event];
   if (!required) return ['event'];
@@ -49,6 +60,14 @@ function listMissingRequiredFields(event, payload) {
 
 function listMissingCommonFields(payload) {
   return listMissingFields(COMMON_REQUIRED_FIELDS, payload);
+}
+
+function normalizeEventChannel(value) {
+  return String(value ?? '').trim();
+}
+
+function isValidEventChannel(value) {
+  return isValidChannel(normalizeEventChannel(value));
 }
 
 function validateEventPayload(payload) {
@@ -70,6 +89,13 @@ function validateEventPayload(payload) {
   if (!SUPPORTED_IP_EVENTS_CONTRACT_VERSIONS.includes(contractVersion)) {
     return { ok: false, error: `unsupported contract_version: ${contractVersion || '<empty>'}` };
   }
+  const missingPresence = COMMON_REQUIRED_PRESENCE_FIELDS.filter((field) => !Object.prototype.hasOwnProperty.call(payload || {}, field));
+  if (missingPresence.length > 0) {
+    return { ok: false, error: `missing required field(s): ${missingPresence.join(',')}` };
+  }
+  if (!isValidEventChannel(payload?.channel)) {
+    return { ok: false, error: 'invalid channel' };
+  }
 
   const missing = listMissingRequiredFields(event, payload);
   if (missing.length > 0) {
@@ -80,9 +106,12 @@ function validateEventPayload(payload) {
 
 module.exports = {
   ALLOWED_IP_EVENTS,
+  COMMON_REQUIRED_PRESENCE_FIELDS,
   IP_EVENTS_CONTRACT_VERSION,
   IP_EVENT_TYPES,
   REQUIRED_FIELDS_BY_EVENT,
   SUPPORTED_IP_EVENTS_CONTRACT_VERSIONS,
+  isValidEventChannel,
+  normalizeEventChannel,
   validateEventPayload
 };

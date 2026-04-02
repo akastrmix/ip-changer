@@ -114,8 +114,8 @@ apt install -y nodejs
         "ip_events_enabled": true,
         "ip_monitor_enabled": true,
         "ipv6_monitor_enabled": false,
-        "ip_events_contract_version": "2026-02-28.v1",
-        "ip_events_contract_versions_supported": ["2026-02-28.v1"],
+        "ip_events_contract_version": "2026-04-03.v1",
+        "ip_events_contract_versions_supported": ["2026-04-03.v1"],
         "notified_ipv4": "1.2.3.4",
         "notified_ipv6": null,
         "runtime_metrics": {
@@ -128,6 +128,7 @@ apt install -y nodejs
       }
       ```
     - 说明：
+      - `channel` 可能为空字符串；这表示关闭频道播报，但不影响 `/info` 或 `/changeip` 主流程。
       - `ip_events_enabled`：事件流上报是否可用（需要 `IP_EVENTS_ENABLED=1` 且配置了 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN`）。
       - `ip_monitor_enabled`：IPv4 变化监测是否可用（需要 `IP_MONITOR_ENABLED=1` 且 `ip_events_enabled=true`）。
       - `ipv6_monitor_enabled`：IPv6 变化监测是否可用（需要 `IPV6_MONITOR_ENABLED=1` 且 `ip_events_enabled=true`）。
@@ -189,6 +190,7 @@ apt install -y nodejs
         }
         ```
         `old_ipv4` 可能为 `null`（例如首次触发且尚未拿到基线时）。
+        `channel` 也可能为空字符串；这表示本次只做会话与管理员侧收敛，不要求频道播报可用。
     - 重要说明：
       - `/changeip` 返回 `ok=true` 仅表示“本次触发请求被接受且会话已落盘，provider 启动已异步调度”。
       - 最终是否换 IP 成功，以后续事件 `change_succeeded` / `change_no_change` / `change_failed` 为准。
@@ -271,7 +273,7 @@ apt install -y nodejs
 - `CHANGE_MONITOR_INTERVAL_SECONDS`：换 IP 会话进行中的判定间隔（默认 `10`）
 - `CHANGE_MONITOR_TIMEOUT_SECONDS`：换 IP 会话超时（默认 `1800`）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
-- `REPORT_CHANNEL`：播报目标（支持 `@channel_username` 或私有频道/超级群 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员）
+- `REPORT_CHANNEL`：播报目标（支持 `@channel_username` 或私有频道/超级群 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员；格式非法会在启动时直接拒绝）
 
 调度语义说明：
 
@@ -348,7 +350,7 @@ chmod +x install.sh uninstall.sh
      - 事件流上报会自动启用（`IP_EVENTS_ENABLED=1`）
    - 入站鉴权密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
-   - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空=禁用频道播报）
+      - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空=禁用频道播报；非空时必须是合法频道用户名或负数 chat_id）
    - 若未启用 `/changeip`：是否启用事件流上报（ip-events）
    - 若启用事件流上报：
      - 上报地址 `IP_EVENTS_ENDPOINT`（CarpoolNotifier 内部接口：`/internal/ip-events`）
@@ -474,7 +476,7 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 并确保 Worker 中已实现内部路由：
 
 - `POST /internal/ip-events`（鉴权：`Authorization: Bearer <IP_EVENTS_TOKEN>`）
-  - 事件体会自动携带 `contract_version`（当前 `2026-02-28.v1`）
+  - 事件体会自动携带 `contract_version`（当前 `2026-04-03.v1`）
 
 随后：
 

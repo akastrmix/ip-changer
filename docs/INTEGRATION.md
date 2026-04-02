@@ -26,13 +26,14 @@
 支持两种格式：
 
 - 公有频道：`@channel_username`
-- 私有频道/超级群：`-100xxxxxxxxxx`（chat_id）
+- 私有频道/超级群：负数 chat_id（常见为 `-100xxxxxxxxxx`）
 
 注意：bot 必须被拉入频道，并具备发送/编辑消息权限（建议设为管理员）。
 
 可留空：
 
 - `REPORT_CHANNEL` 可以留空，表示不向频道播报（CarpoolNotifier 仍会通知管理员，并使用事件流收敛会话/锁）。
+- `REPORT_CHANNEL` 若非空，必须是合法 `@channel_username` 或负数 chat_id；格式非法会在 `ip-changer` 启动时直接拒绝。
 
 ## 2. 方向 A：CarpoolNotifier → ip-changer（可选一键换 IP）
 
@@ -141,7 +142,11 @@ VPS 侧配置：
 
 ### 3.3 上报 payload
 
-最小必需字段：
+最小必需字段（`channel` 必带）：
+
+- `channel` 的值必须是 `@xxx`、负数 chat_id（常见为 `-100...`）或空字符串
+- 空字符串表示禁用频道播报
+- `ip-changer` 会始终显式发送 `channel`；Worker 不再接受“省略 channel 再回退旧状态”的旧语义
 
 ```json
 {
@@ -149,7 +154,7 @@ VPS 侧配置：
   "channel": "-1001234567890",
   "op_id": "20260128T061500Z_cmhk_7f2c0f",
   "ts": "2026-01-28T06:15:00.000Z",
-  "contract_version": "2026-02-28.v1",
+  "contract_version": "2026-04-03.v1",
   "event": "change_started"
 }
 ```

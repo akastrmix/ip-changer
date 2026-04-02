@@ -611,7 +611,12 @@ async function testNaturalIpv4RetriesReuseOpId(tmpRoot) {
   }
 }
 
-async function testStartChangeSessionReportsPersistFailure() {
+async function testStartChangeSessionReportsPersistFailure(tmpRoot) {
+  const caseDir = path.join(tmpRoot, 'quick.start_change_session_persist_failure');
+  fs.mkdirSync(caseDir, { recursive: true });
+  const parentFile = path.join(caseDir, 'pending_parent_file');
+  fs.writeFileSync(parentFile, 'blocked', 'utf8');
+
   const config = loadConfigFromEnv({
     AUTH_TOKEN: 'token',
     CHANGEIP_ENABLED: '1',
@@ -620,16 +625,23 @@ async function testStartChangeSessionReportsPersistFailure() {
     IP_EVENTS_ENABLED: '1',
     IP_EVENTS_ENDPOINT: 'http://127.0.0.1/internal/ip-events',
     IP_EVENTS_TOKEN: 'events-token',
-    PENDING_CHANGE_FILE: '/dev/null/pending_change.json',
+    PENDING_CHANGE_FILE: path.join(parentFile, 'pending_change.json'),
     SERVER_LABEL: 'HKT',
     REPORT_CHANNEL: '-1001234567890'
   });
 
-  const started = startChangeSession(config, {
-    opId: '20260301T010203Z_hkt_ipv4_cc34ef',
-    oldIpv4: '1.2.3.4',
-    startedAt: new Date('2026-03-01T01:02:03.000Z')
-  });
+  const originalError = console.error;
+  console.error = () => {};
+  let started;
+  try {
+    started = startChangeSession(config, {
+      opId: '20260301T010203Z_hkt_ipv4_cc34ef',
+      oldIpv4: '1.2.3.4',
+      startedAt: new Date('2026-03-01T01:02:03.000Z')
+    });
+  } finally {
+    console.error = originalError;
+  }
   assert(!started.ok, 'expected startChangeSession to fail when pending file is not writable');
   assert(
     String(started.error || '').includes('failed to persist change session'),
@@ -826,6 +838,7 @@ async function testIpv6ConfigAndOpId() {
 async function testIpEventsContractValidation() {
   const okIpv4 = validateEventPayload({
     server_label: 'HKT',
+    channel: '-1001234567890',
     op_id: '20260228T101500Z_hkt_ipv4_ab12cd',
     ts: '2026-02-28T10:15:00.000Z',
     contract_version: IP_EVENTS_CONTRACT_VERSION,
@@ -835,8 +848,46 @@ async function testIpEventsContractValidation() {
   });
   assert(okIpv4.ok, `expected ipv4_changed payload valid, got: ${okIpv4.error}`);
 
+  const okWithDisabledChannel = validateEventPayload({
+    server_label: 'HKT',
+    channel: '',
+    op_id: '20260228T101500Z_hkt_ipv4_bc23de',
+    ts: '2026-02-28T10:15:00.000Z',
+    contract_version: IP_EVENTS_CONTRACT_VERSION,
+    event: IP_EVENT_TYPES.CHANGE_STARTED
+  });
+  assert(okWithDisabledChannel.ok, `expected empty channel to remain valid, got: ${okWithDisabledChannel.error}`);
+
+  const missingChannel = validateEventPayload({
+    server_label: 'HKT',
+    op_id: '20260228T101500Z_hkt_ipv4_cd34ef',
+    ts: '2026-02-28T10:15:00.000Z',
+    contract_version: IP_EVENTS_CONTRACT_VERSION,
+    event: IP_EVENT_TYPES.CHANGE_STARTED
+  });
+  assert(!missingChannel.ok, 'expected missing channel to be rejected');
+  assert(
+    String(missingChannel.error || '').includes('channel'),
+    `expected missing channel error, got: ${missingChannel.error}`
+  );
+
+  const badChannel = validateEventPayload({
+    server_label: 'HKT',
+    channel: 'invalid-channel',
+    op_id: '20260228T101500Z_hkt_ipv4_de45fa',
+    ts: '2026-02-28T10:15:00.000Z',
+    contract_version: IP_EVENTS_CONTRACT_VERSION,
+    event: IP_EVENT_TYPES.CHANGE_STARTED
+  });
+  assert(!badChannel.ok, 'expected invalid channel to be rejected');
+  assert(
+    String(badChannel.error || '').includes('invalid channel'),
+    `expected invalid channel error, got: ${badChannel.error}`
+  );
+
   const missingIpv6 = validateEventPayload({
     server_label: 'HKT',
+    channel: '-1001234567890',
     op_id: '20260228T101500Z_hkt_ipv6_ab12cd',
     ts: '2026-02-28T10:15:00.000Z',
     contract_version: IP_EVENTS_CONTRACT_VERSION,
@@ -850,6 +901,7 @@ async function testIpEventsContractValidation() {
   );
 
   const missingCommon = validateEventPayload({
+    channel: '-1001234567890',
     event: IP_EVENT_TYPES.CHANGE_STARTED
   });
   assert(!missingCommon.ok, 'expected missing server_label/op_id/ts/contract_version to be invalid');
@@ -860,6 +912,7 @@ async function testIpEventsContractValidation() {
 
   const badOpId = validateEventPayload({
     server_label: 'HKT',
+    channel: '-1001234567890',
     op_id: 'bad op id',
     ts: '2026-02-28T10:15:00.000Z',
     contract_version: IP_EVENTS_CONTRACT_VERSION,
@@ -869,6 +922,7 @@ async function testIpEventsContractValidation() {
 
   const badTs = validateEventPayload({
     server_label: 'HKT',
+    channel: '-1001234567890',
     op_id: '20260228T101500Z_hkt_ipv4_ab12cd',
     ts: 'not-a-time',
     contract_version: IP_EVENTS_CONTRACT_VERSION,
@@ -878,6 +932,7 @@ async function testIpEventsContractValidation() {
 
   const badContractVersion = validateEventPayload({
     server_label: 'HKT',
+    channel: '-1001234567890',
     op_id: '20260228T101500Z_hkt_ipv4_ab12cd',
     ts: '2026-02-28T10:15:00.000Z',
     contract_version: '2025-01-01.v0',
@@ -887,12 +942,38 @@ async function testIpEventsContractValidation() {
 
   const unknown = validateEventPayload({
     server_label: 'HKT',
+    channel: '-1001234567890',
     op_id: '20260228T101500Z_hkt_ipv4_ab12cd',
     ts: '2026-02-28T10:15:00.000Z',
     contract_version: IP_EVENTS_CONTRACT_VERSION,
     event: 'something_else'
   });
   assert(!unknown.ok, 'expected unknown event to be invalid');
+}
+
+async function testReportChannelConfigValidation() {
+  const emptyChannel = loadConfigFromEnv({
+    AUTH_TOKEN: 'token',
+    REPORT_CHANNEL: ''
+  });
+  assert(emptyChannel.reportChannel === '', 'expected empty REPORT_CHANNEL to remain valid');
+
+  const usernameChannel = loadConfigFromEnv({
+    AUTH_TOKEN: 'token',
+    REPORT_CHANNEL: ' @abcde '
+  });
+  assert(usernameChannel.reportChannel === '@abcde', `expected trimmed REPORT_CHANNEL, got ${usernameChannel.reportChannel}`);
+
+  let message = '';
+  try {
+    loadConfigFromEnv({
+      AUTH_TOKEN: 'token',
+      REPORT_CHANNEL: 'invalid-channel'
+    });
+  } catch (err) {
+    message = String(err && err.message ? err.message : err);
+  }
+  assert(message.includes('REPORT_CHANNEL'), `expected invalid REPORT_CHANNEL to fail fast, got: ${message || '<no error>'}`);
 }
 
 async function testCompileRejectsNonIntegerSuffix(tmpRoot) {
@@ -1034,6 +1115,10 @@ const QUICK_CASES = [
   {
     title: 'ip events contract validates required fields by event type',
     run: testIpEventsContractValidation
+  },
+  {
+    title: 'REPORT_CHANNEL is validated at config load time',
+    run: testReportChannelConfigValidation
   },
   {
     title: 'http_flow compile rejects integer fields with non-numeric suffix',
