@@ -92,13 +92,6 @@ function markChangeSessionRebootScheduleAttempted(config, opId, {
   });
 }
 
-function setChangeSessionOldIpv4(config, opId, oldIpv4) {
-  if (!isValidIpv4(oldIpv4)) return false;
-  return !!mutateChangeSessionIfCurrent(config, opId, (next) => {
-    next.old_ipv4 = oldIpv4;
-  });
-}
-
 function markChangeSessionOfflineObserved(config, opId) {
   return !!mutateChangeSessionIfCurrent(config, opId, (next) => {
     next.offline_observed = true;
@@ -139,5 +132,4 @@ module.exports = {
   markChangeSessionTerminalSent,
   markChangeSessionTimeoutStuckAlert,
   recordChangeSessionError,
-  setChangeSessionOldIpv4
 };

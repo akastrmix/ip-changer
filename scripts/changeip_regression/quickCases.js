@@ -7,7 +7,7 @@ const path = require('path');
 
 const { _test: monitorTestHelpers } = require('../../src/monitor');
 const { _test: naturalTestHelpers } = require('../../src/monitor/natural');
-const { loadConfigFromEnv } = require('../../src/config');
+const { _test: configTestHelpers, loadConfigFromEnv } = require('../../src/config');
 const { isValidIpv4, _test: ipv4TestHelpers } = require('../../src/ip/ipv4');
 const { makeIpv4OpId, makeIpv6OpId } = require('../../src/opId');
 const {
@@ -622,6 +622,7 @@ async function testStartChangeSessionReportsPersistFailure(tmpRoot) {
     CHANGEIP_ENABLED: '1',
     CHANGEIP_PROVIDER: 'exec',
     CHANGEIP_EXEC_COMMAND: '/bin/true',
+    REBOOT_DELAY_MINUTES: '-1',
     IP_EVENTS_ENABLED: '1',
     IP_EVENTS_ENDPOINT: 'http://127.0.0.1/internal/ip-events',
     IP_EVENTS_TOKEN: 'events-token',
@@ -672,6 +673,7 @@ async function testPendingTimeoutStuckAlertThrottleHelper(tmpRoot) {
     CHANGEIP_ENABLED: '1',
     CHANGEIP_PROVIDER: 'exec',
     CHANGEIP_EXEC_COMMAND: '/bin/true',
+    REBOOT_DELAY_MINUTES: '-1',
     IP_EVENTS_ENABLED: '1',
     IP_EVENTS_ENDPOINT: 'http://127.0.0.1/internal/ip-events',
     IP_EVENTS_TOKEN: 'events-token',
@@ -724,6 +726,79 @@ async function testPendingTimeoutStuckAlertThrottleHelper(tmpRoot) {
     pending.timeout_stuck_alert_last_reason === 'third',
     `expected timeout_stuck_alert_last_reason=third, got ${pending.timeout_stuck_alert_last_reason}`
   );
+}
+
+async function testShutdownBinaryConfigFailsFast() {
+  let message = '';
+  const originalExistsSync = fs.existsSync;
+  fs.existsSync = () => false;
+  try {
+    loadConfigFromEnv({
+      AUTH_TOKEN: 'token',
+      CHANGEIP_ENABLED: '1',
+      CHANGEIP_PROVIDER: 'exec',
+      CHANGEIP_EXEC_COMMAND: '/bin/true',
+      REBOOT_DELAY_MINUTES: '1'
+    });
+  } catch (err) {
+    message = String(err && err.message ? err.message : err);
+  } finally {
+    fs.existsSync = originalExistsSync;
+  }
+
+  assert(
+    message.includes('shutdown binary not found'),
+    `expected missing shutdown binary to fail fast, got: ${message || '<no error>'}`
+  );
+
+  const requiredMissing = (() => {
+    try {
+      configTestHelpers.resolveShutdownBin({ required: true, existsSync: () => false });
+      return '';
+    } catch (err) {
+      return String(err && err.message ? err.message : err);
+    }
+  })();
+  assert(
+    requiredMissing.includes('shutdown binary not found'),
+    `expected required shutdown resolution to fail fast, got: ${requiredMissing || '<no error>'}`
+  );
+
+  const skipped = configTestHelpers.resolveShutdownBin({ existsSync: () => false });
+  assert(skipped === '', `expected optional shutdown resolution to return empty string, got: ${skipped}`);
+}
+
+async function testShutdownBinaryConfigFailsFastStable() {
+  let requiredMissing = '';
+  const originalExistsSync = fs.existsSync;
+  fs.existsSync = () => false;
+  try {
+    loadConfigFromEnv({
+      AUTH_TOKEN: 'token',
+      CHANGEIP_ENABLED: '1',
+      CHANGEIP_PROVIDER: 'exec',
+      CHANGEIP_EXEC_COMMAND: '/bin/true',
+      REBOOT_DELAY_MINUTES: '1'
+    });
+  } catch (err) {
+    requiredMissing = String(err && err.message ? err.message : err);
+  } finally {
+    fs.existsSync = originalExistsSync;
+  }
+
+  assert(
+    requiredMissing.includes('shutdown binary not found'),
+    `expected missing shutdown binary to fail fast, got: ${requiredMissing || '<no error>'}`
+  );
+
+  fs.existsSync = () => false;
+  let skipped = '';
+  try {
+    skipped = configTestHelpers.resolveShutdownBin();
+  } finally {
+    fs.existsSync = originalExistsSync;
+  }
+  assert(skipped === '', `expected optional shutdown resolution to return empty string, got: ${skipped}`);
 }
 
 async function testNaturalMonitorPausedWhilePendingHelper() {
@@ -820,16 +895,24 @@ async function testIpv6ConfigAndOpId() {
   assert(cfg.ipMonitorIntervalSeconds === 120, `unexpected shared monitor interval: ${cfg.ipMonitorIntervalSeconds}`);
   assert(!Object.prototype.hasOwnProperty.call(cfg, 'ipv6MonitorIntervalSeconds'), 'ipv6 interval should reuse shared monitor interval');
 
-  const clamped = loadConfigFromEnv({
-    AUTH_TOKEN: 'token',
-    CHANGEIP_ENABLED: '0',
-    IP_EVENTS_ENABLED: '1',
-    IP_EVENTS_ENDPOINT: 'http://127.0.0.1/internal/ip-events',
-    IP_EVENTS_TOKEN: 'events-token',
-    IPV6_MONITOR_ENABLED: '1',
-    IP_MONITOR_INTERVAL_SECONDS: '1'
-  });
-  assert(clamped.ipMonitorIntervalSeconds === 10, `expected shared interval clamp to 10, got ${clamped.ipMonitorIntervalSeconds}`);
+  let invalidMessage = '';
+  try {
+    loadConfigFromEnv({
+      AUTH_TOKEN: 'token',
+      CHANGEIP_ENABLED: '0',
+      IP_EVENTS_ENABLED: '1',
+      IP_EVENTS_ENDPOINT: 'http://127.0.0.1/internal/ip-events',
+      IP_EVENTS_TOKEN: 'events-token',
+      IPV6_MONITOR_ENABLED: '1',
+      IP_MONITOR_INTERVAL_SECONDS: '1'
+    });
+  } catch (err) {
+    invalidMessage = String(err && err.message ? err.message : err);
+  }
+  assert(
+    invalidMessage.includes('IP_MONITOR_INTERVAL_SECONDS'),
+    `expected out-of-range shared interval to fail fast, got: ${invalidMessage || '<no error>'}`
+  );
 
   const opId = makeIpv6OpId('HKT');
   assert(/_ipv6_[0-9a-f]{6}$/.test(opId), `unexpected ipv6 op_id format: ${opId}`);
@@ -1109,7 +1192,7 @@ const QUICK_CASES = [
     run: testIpv4MonitorErrorThrottleHelper
   },
   {
-    title: 'ipv6 monitor reuses shared interval and op_id uses ipv6 suffix',
+    title: 'ipv6 monitor reuses shared interval, but invalid interval config fails fast',
     run: testIpv6ConfigAndOpId
   },
   {
@@ -1119,6 +1202,10 @@ const QUICK_CASES = [
   {
     title: 'REPORT_CHANNEL is validated at config load time',
     run: testReportChannelConfigValidation
+  },
+  {
+    title: 'reboot-enabled config fails fast when shutdown binary is unavailable',
+    run: testShutdownBinaryConfigFailsFastStable
   },
   {
     title: 'http_flow compile rejects integer fields with non-numeric suffix',

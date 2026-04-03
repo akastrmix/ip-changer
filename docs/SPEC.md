@@ -31,6 +31,7 @@
 - Node.js：建议 16+（不依赖第三方包）
 - systemd：用于自启与守护（通过 `install.sh` 安装）
 - 如果启用 `/changeip`：需要 root 权限调用 `shutdown` 与执行 provider 触发动作（脚本/命令/http_flow）
+- `script` / `exec` provider 依赖 `/bin/bash`，以 Debian/Ubuntu 服务器环境为边界；不提供 Windows 运行时兼容
 
 ## 3. 配置（环境变量）
 
@@ -43,6 +44,7 @@
 HTTP 服务：
 
 - `PORT`：监听端口（默认 `8787`，范围 `1-65535`）
+- 数值型配置仅在“未设置”时使用默认值；若填了非法值、非整数或超出允许范围，服务会在配置加载阶段直接拒绝启动
 
 一键换 IP（可选）：
 
@@ -52,6 +54,7 @@ HTTP 服务：
 - `CHANGEIP_EXEC_COMMAND`：provider=`exec` 时执行的命令
 - `CHANGEIP_HTTP_FLOW_FILE`：provider=`http_flow` 时使用的 flow JSON 绝对路径
 - `REBOOT_DELAY_MINUTES`：provider 触发后，几分钟后重启（设置为 `-1` 表示不重启；否则仅允许 `1..15`，禁止 `0`）
+- 当 `CHANGEIP_ENABLED=1` 且 `REBOOT_DELAY_MINUTES!=-1` 时，配置加载阶段必须能找到 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；否则直接启动失败
 
 `http_flow` flow 文件要点（v1）：
 
@@ -94,8 +97,8 @@ HTTP 服务：
 - `/changeip` 会话终态判定只看 IPv4；IPv6 当前不参与 `change_*` 语义。
 - 开始监测后，获取到合法公网 IPv4 后即可判定终态：
   - 若 `old_ipv4` 缺失（会话创建时未拿到基线）：
-    - 优先尝试从 `IP_STATE_FILE`（`notified_ipv4` / `observed_ipv4`）回填基线并继续判定
-    - 若到会话超时仍无可用基线：`change_failed`（`old_ipv4_unknown`）
+    - 不会再从 `IP_STATE_FILE` 或额外公网查询回填基线
+    - 会直接收敛为 `change_failed`（`old_ipv4_unknown`）
   - 若 `ip1 != old_ipv4`：`change_succeeded`
   - 若 `ip1 == old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
@@ -132,7 +135,8 @@ HTTP 防护约束（资源与稳定性）：
 
 ### 4.2 `POST /info`
 
-- 鉴权：Body 必须包含 `{ "token": "<AUTH_TOKEN>" }`
+- 鉴权：Body 必须是 JSON 对象，且包含 `{ "token": "<AUTH_TOKEN>" }`
+- 若 Body 不是 JSON 对象（例如 `[]`、`123`、`"abc"`），返回 `400` `{ ok:false, error:"json body must be an object" }`
 - 失败：`403` `{ ok:false, error:"forbidden" }`
 - 成功：`200`，包含：
   - `server_label`
@@ -156,12 +160,13 @@ HTTP 防护约束（资源与稳定性）：
 
 启用时：
 
-- 鉴权：Body 必须包含 `{ "token": "<AUTH_TOKEN>" }`，否则 `403`
+- 鉴权：Body 必须是 JSON 对象，且包含 `{ "token": "<AUTH_TOKEN>" }`，否则 `403`
+  - 若 Body 不是 JSON 对象（例如 `[]`、`123`、`"abc"`），返回 `400` `{ ok:false, error:"json body must be an object" }`
   - 可选：`{ "force": true }` 用于清理“已超时”的 `pending_change` 会话并重新触发
-    - 若 `pending_change` 的超时字段损坏，会基于 `started_at` + 当前配置推导超时；仅在确认已超时后才会清理
+    - 仅当会话的 `timeout_at_ms` 合法且已超时（或 `terminal_sent=true`）时才允许清理；时序字段损坏时不会做推导式清理
 - 若未启用事件流上报（`IP_EVENTS_ENABLED=1` 且配置齐全），则会返回 `500`：`ip events not configured`
 - 若存在进行中的会话（`pending_change.json` 里已有 `op_id`），默认返回 `409`：`change already in progress`（并带现有 `op_id`）
-  - 若请求带 `force=true` 且该会话已超时（优先使用 `timeout_at_ms`；必要时基于 `started_at` + 当前配置推导），则会先清理旧会话再触发新会话
+  - 若请求带 `force=true` 且该会话的 `timeout_at_ms` 合法且已超时（或 `terminal_sent=true`），则会先清理旧会话再触发新会话
 - provider 规则：
   - `CHANGEIP_PROVIDER` 必须为 `script` / `exec` / `http_flow`
   - provider=`http_flow` 时，flow 文件必须是合法 JSON 对象，且包含非空 `steps` 数组
@@ -186,10 +191,9 @@ HTTP 防护约束（资源与稳定性）：
   - provider 启动失败时会尝试立即上报 `change_failed`；若该次上报被拒绝/超时，会保留 pending 会话并由监测循环重试同一 `change_failed`（`reason` 维持原失败原因）
 - 成功：
   - 后台执行：按 provider 触发（`script` / `exec` / `http_flow`）
-  - 当会话初始 `old_ipv4` 不可用时，会异步尝试公网 IPv4 回填基线；该回填不会阻塞 `200` 返回
   - 重启行为：
     - 若 `REBOOT_DELAY_MINUTES=-1`：不执行重启
-    - 否则安排重启：`shutdown -r +<REBOOT_DELAY_MINUTES>`
+    - 否则安排重启：使用固定路径 `/usr/sbin/shutdown` 或 `/sbin/shutdown` 执行 `shutdown -r +<REBOOT_DELAY_MINUTES>`；二进制缺失会在启动阶段直接失败
   - 返回 `200`，包含：
     - `op_id`（用于 bot 会话关联）
     - `message`
@@ -274,6 +278,9 @@ IPv6 自然变化事件示例：
 
 JSON 对象（以当前版本定义为准，不承诺向后兼容旧字段）：
 
+- 若文件存在但不是合法 JSON 对象，或当前进程无权读取，服务会在启动时直接失败；不会把该情况当作“空状态”
+- 若运行中再次读取到损坏/不可读的 `IP_STATE_FILE`，服务会直接退出，由外部守护进程拉起；不会继续带着坏状态运行
+
 - `notified_ipv4`：上次“成功上报”的 IPv4（基线）
 - `observed_ipv4`：最近一次观测到的 IPv4
 - `notified_ipv6`：上次“成功上报”的 IPv6（基线，可选）
@@ -293,6 +300,9 @@ JSON 对象（以当前版本定义为准，不承诺向后兼容旧字段）：
 ### 5.5 会话文件格式（`PENDING_CHANGE_FILE`）
 
 JSON 对象（用于跨重启恢复；字段按当前版本严格校验，不兼容旧格式）：
+
+- 若文件存在但 JSON 语法损坏、不是对象或无法读取，服务会在启动时直接失败；只有“文件不存在”才表示当前无 pending 会话
+- 若运行中再次读取到损坏/不可读的 `PENDING_CHANGE_FILE`，服务会直接退出，由外部守护进程拉起；不会继续做降级重试
 
 - `op_id`：当前换 IP 会话 ID
 - `server_label` / `channel`：本次会话路由字段

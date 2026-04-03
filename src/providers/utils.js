@@ -128,8 +128,13 @@ async function spawnDetachedAndProbe({
   let proc;
   try {
     proc = spawn(command, args, { stdio: 'ignore', detached: true });
-  } catch {
-    return { ok: false, code: PROVIDER_ERROR_CODES.SPAWN_FAILED, error: spawnErrorMessage };
+  } catch (err) {
+    return {
+      ok: false,
+      code: PROVIDER_ERROR_CODES.SPAWN_FAILED,
+      error: spawnErrorMessage,
+      detail: String(err && err.message ? err.message : err)
+    };
   }
 
   const probe = await waitForStableStart(proc, { graceMs, earlyExitCode });

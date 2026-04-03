@@ -51,6 +51,8 @@
 - `exec` provider：准备可执行命令（`CHANGEIP_EXEC_COMMAND`）
 - `http_flow` provider：准备 flow JSON 文件（`CHANGEIP_HTTP_FLOW_FILE`）
 
+`script` / `exec` provider 明确以 Debian/Ubuntu 服务器环境为目标，依赖 `/bin/bash`；不再为 Windows 开发机做运行时兼容分支。
+
 安装完成后，对服务器产生的**主要持久影响**包括：
 
 - 创建 systemd 单元：`/etc/systemd/system/changeip-http.service`
@@ -101,6 +103,7 @@ apt install -y nodejs
       { "token": "YOUR_SHARED_SECRET" }
       ```
     - 校验规则：
+      - 请求体必须是 JSON 对象；数组、数字、字符串等非对象 JSON 会直接返回 `400`。
       - `token` 字段必须等于环境变量 `AUTH_TOKEN`。
       - 不满足则返回 `403`。
     - 返回示例：
@@ -146,6 +149,7 @@ apt install -y nodejs
       { "token": "YOUR_SHARED_SECRET", "force": true }
       ```
     - 校验规则：
+      - 请求体必须是 JSON 对象；数组、数字、字符串等非对象 JSON 会直接返回 `400`。
       - `token` 字段必须等于环境变量 `AUTH_TOKEN`。
       - 不满足则返回 `403`。
       - 事件流上报必须可用（`IP_EVENTS_ENABLED=1` 且 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN` 已配置），否则返回 `500 ip events not configured`。
@@ -157,14 +161,14 @@ apt install -y nodejs
           "op_id": "20260128T061500Z_cmhk_7f2c0f"
         }
         ```
-        - 若请求体包含 `force:true` 且该会话已超时（优先使用 `timeout_at_ms`；必要时基于 `started_at` + 当前配置推导），会先清理旧会话再触发新会话（返回 `200`）
+        - 若请求体包含 `force:true` 且该会话的 `timeout_at_ms` 合法且已超时，会先清理旧会话再触发新会话（返回 `200`）
+        - 若会话时序字段不合法，则 `force:true` 不会做推导式清理，仍返回 `409`
       - `CHANGEIP_PROVIDER` 在启用 `/changeip` 时必须显式配置（`script` / `exec` / `http_flow`）。
       - `script` provider：要求 `CHANGEIP_SCRIPT` 为可读常规文件（绝对路径）。
       - `exec` provider：要求 `CHANGEIP_EXEC_COMMAND` 非空。
     - `http_flow` provider：要求 `CHANGEIP_HTTP_FLOW_FILE` 为可读常规文件（绝对路径，内容需为合法 flow JSON）。
     - 通过校验后：
       - 会先落盘创建本次换 IP 的 `pending_change` 会话，并尽快返回 `200`（避免“触发后立刻断网”导致响应丢失）。
-      - 若创建会话时缺少基线 IPv4，会在后台异步尝试回填；该回填不会阻塞 `/changeip` 返回。
       - provider 启动与可选重启安排由后台的 pending runner 执行；最终成功/失败以 `change_*` 事件为准。
       - 若校验阶段失败（配置/资源不可用），返回 `500`，并带稳定错误码字段：
         ```json
@@ -189,7 +193,7 @@ apt install -y nodejs
           "reboot_delay_minutes": 1
         }
         ```
-        `old_ipv4` 可能为 `null`（例如首次触发且尚未拿到基线时）。
+        `old_ipv4` 可能为 `null`（例如首次触发且尚未拿到基线时）；此时会话后续会以 `change_failed(reason=old_ipv4_unknown)` 收敛，不会再从其它状态源回填基线。
         `channel` 也可能为空字符串；这表示本次只做会话与管理员侧收敛，不要求频道播报可用。
     - 重要说明：
       - `/changeip` 返回 `ok=true` 仅表示“本次触发请求被接受且会话已落盘，provider 启动已异步调度”。
@@ -210,6 +214,8 @@ apt install -y nodejs
 - `CHANGEIP_EXEC_COMMAND`：当 provider=`exec` 时执行的命令
 - `CHANGEIP_HTTP_FLOW_FILE`：当 provider=`http_flow` 时使用的 flow JSON 绝对路径
 - `REBOOT_DELAY_MINUTES`：触发 provider 后，几分钟后重启（设置为 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）。
+- 当 `CHANGEIP_ENABLED=1` 且 `REBOOT_DELAY_MINUTES!= -1` 时，服务会在启动时要求系统存在 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；缺失则直接拒绝启动。
+- 数值型配置只在“未设置”时使用默认值；若填了非法值或超出允许范围，服务会在启动时直接拒绝。
 
 ### 3.1 `http_flow` 配置文件（`CHANGEIP_HTTP_FLOW_FILE`）
 
@@ -274,6 +280,8 @@ apt install -y nodejs
 - `CHANGE_MONITOR_TIMEOUT_SECONDS`：换 IP 会话超时（默认 `1800`）
 - `SERVER_LABEL`：服务器标识（用于多服务器区分）
 - `REPORT_CHANNEL`：播报目标（支持 `@channel_username` 或私有频道/超级群 `-100...` chat_id；可留空表示不向频道播报，仅通知管理员；格式非法会在启动时直接拒绝）
+- `IP_STATE_FILE` / `PENDING_CHANGE_FILE` 若存在，必须是可读取的合法 JSON 对象；语法损坏或权限错误会在启动时直接拒绝，而不会被当作“空状态”。
+- 若运行中再读到损坏的 `IP_STATE_FILE` / `PENDING_CHANGE_FILE`，进程会直接退出，由 systemd 拉起，而不是继续带着坏状态运行。
 
 调度语义说明：
 
@@ -545,7 +553,8 @@ node scripts/changeip_regression.js
   - 监测调度：pending 超时且终态事件上报失败时，超时未收敛告警按窗口节流（避免刷屏）
   - 监测调度：pending 会话存在时暂停自然监测调度（避免 busy loop）
   - IPv4/IPv6 监测：错误日志按窗口节流，并在恢复后仅记录一次 recovered 日志
-  - 配置解析：IPv6 监测开关生效且复用 `IP_MONITOR_INTERVAL_SECONDS`，并验证 `ipv6` 自然事件 op_id 后缀格式
+- 配置解析：IPv6 监测开关生效且复用 `IP_MONITOR_INTERVAL_SECONDS`，并验证 `ipv6` 自然事件 op_id 后缀格式
+- 配置解析：数值型配置超出允许范围时立即启动失败，不做静默回退或 clamp
   - 事件契约：`event` 枚举与必填字段按 `src/contracts/ipEvents.js` 校验
   - `wait_until` 硬超时（请求耗时超过 deadline 必须失败）
   - `request` 重试收敛（按 `retries/retry_delay_ms` 成功）
@@ -560,10 +569,18 @@ node scripts/changeip_regression.js
 - `exec` 命令快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=exec_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - 脚本快速异常退出 + 首次 `change_failed` 上报被拒：会保留 `pending_change.json` 并由监测循环重试同一终态，成功后再清理
 - 旧/不完整 `pending_change.json`：不会做兼容补全；会先尝试上报 `change_failed(invalid_pending_*)`，成功后清理（若上报不可达则保留并重试）；若缺少可用 `op_id` 则直接清理
+- 损坏的 `ip_state.json` / `pending_change.json`：启动时直接失败，不会被当作“文件不存在”继续运行
+- 运行中被外部写坏的 `pending_change.json`：进程会直接退出，而不是继续监测/重试
+- 会话缺少 `old_ipv4`：终态会收敛为 `change_failed(old_ipv4_unknown)`，不会再从 `ip_state` 回填基线
 - `http_flow` provider：验证“登录 + 重定向 + 触发动作”流程（含 cookie 会话与变量提取）
 - `http_flow` provider：验证编译期校验（未知变量引用会在执行前直接拒绝）
 - `ip-events` 返回 `500`：验证“已超时 pending 会话”会持续重试并记录 stuck alert 指标
 - `ip-events` 请求超时：验证“已超时 pending 会话”在网络慢/超时下同样可观测并保持会话不丢失
+
+说明：
+
+- 完整的 `script` / `exec` provider 回归默认面向 Linux 目标机。
+- 在非 Linux 开发机上运行 `node scripts/changeip_regression.js` 时，这两类“真正执行 `/bin/bash`”的 case 会被跳过；这不会改变生产环境仅支持 Debian/Ubuntu 的结论。
 
 ---
 

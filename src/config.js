@@ -9,13 +9,19 @@ function parseBool(value) {
   return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
 }
 
-function parsePositiveInt(value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
+function parsePositiveInt(label, value, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const raw = String(value ?? '').trim();
   if (!raw) return fallback;
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n)) return fallback;
-  if (n < min) return min;
-  if (n > max) return max;
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  if (n < min || n > max) {
+    throw new Error(`${label} must be between ${min} and ${max}`);
+  }
   return n;
 }
 
@@ -23,8 +29,9 @@ function parseStrictRebootDelayMinutes(value, fallback) {
   const raw = String(value ?? '').trim();
   if (!raw) return fallback;
   if (raw === '-1') return -1;
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n)) throw new Error('REBOOT_DELAY_MINUTES must be -1 or 1..15');
+  if (!/^-?\d+$/.test(raw)) throw new Error('REBOOT_DELAY_MINUTES must be -1 or 1..15');
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) throw new Error('REBOOT_DELAY_MINUTES must be -1 or 1..15');
   if (n === 0) throw new Error('REBOOT_DELAY_MINUTES=0 is forbidden');
   if (n < 1 || n > 15) throw new Error('REBOOT_DELAY_MINUTES must be -1 or 1..15');
   return n;
@@ -37,16 +44,19 @@ function safeTokenEquals(a, b) {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
-function resolveShutdownBin() {
+function resolveShutdownBin({ required = false, existsSync = fs.existsSync } = {}) {
   const candidates = ['/usr/sbin/shutdown', '/sbin/shutdown'];
   for (const p of candidates) {
     try {
-      if (fs.existsSync(p)) return p;
+      if (existsSync(p)) return p;
     } catch {
       // ignore
     }
   }
-  return 'shutdown';
+  if (required) {
+    throw new Error('shutdown binary not found (expected /usr/sbin/shutdown or /sbin/shutdown)');
+  }
+  return '';
 }
 
 function requireNonEmpty(label, value) {
@@ -64,7 +74,7 @@ function requireValidReportChannel(value) {
 }
 
 function loadConfigFromEnv(env = process.env) {
-  const port = parsePositiveInt(env.PORT, 8787, { min: 1, max: 65535 });
+  const port = parsePositiveInt('PORT', env.PORT, 8787, { min: 1, max: 65535 });
   const authToken = requireNonEmpty('AUTH_TOKEN', env.AUTH_TOKEN);
 
   const serverLabel = String(env.SERVER_LABEL || '').trim() || 'SERVER';
@@ -92,10 +102,17 @@ function loadConfigFromEnv(env = process.env) {
   }
   const rebootDelayMinutes = changeipEnabled ? parseStrictRebootDelayMinutes(env.REBOOT_DELAY_MINUTES, 1) : 1;
 
-  const shutdownBin = resolveShutdownBin();
+  const shutdownBin = changeipEnabled && rebootDelayMinutes !== -1
+    ? resolveShutdownBin({ required: true })
+    : '';
 
   const ipMonitorEnabled = parseBool(env.IP_MONITOR_ENABLED ?? '0');
-  const ipMonitorIntervalSeconds = parsePositiveInt(env.IP_MONITOR_INTERVAL_SECONDS, 60, { min: 10, max: 24 * 60 * 60 });
+  const ipMonitorIntervalSeconds = parsePositiveInt(
+    'IP_MONITOR_INTERVAL_SECONDS',
+    env.IP_MONITOR_INTERVAL_SECONDS,
+    60,
+    { min: 10, max: 24 * 60 * 60 }
+  );
   const ipv6MonitorEnabled = parseBool(env.IPV6_MONITOR_ENABLED ?? '0');
   const ipStateFile = String(env.IP_STATE_FILE || '/var/lib/changeip-http/ip_state.json').trim();
   const pendingChangeFile = String(env.PENDING_CHANGE_FILE || '/var/lib/changeip-http/pending_change.json').trim();
@@ -105,9 +122,24 @@ function loadConfigFromEnv(env = process.env) {
   const ipEventsToken = String(env.IP_EVENTS_TOKEN || '').trim();
   const ipEventsActive = ipEventsEnabled && !!ipEventsEndpoint && !!ipEventsToken;
 
-  const changeMonitorStartDelaySeconds = parsePositiveInt(env.CHANGE_MONITOR_START_DELAY_SECONDS, 30, { min: 0, max: 3600 });
-  const changeMonitorIntervalSeconds = parsePositiveInt(env.CHANGE_MONITOR_INTERVAL_SECONDS, 10, { min: 1, max: 3600 });
-  const changeMonitorTimeoutSeconds = parsePositiveInt(env.CHANGE_MONITOR_TIMEOUT_SECONDS, 1800, { min: 10, max: 24 * 60 * 60 });
+  const changeMonitorStartDelaySeconds = parsePositiveInt(
+    'CHANGE_MONITOR_START_DELAY_SECONDS',
+    env.CHANGE_MONITOR_START_DELAY_SECONDS,
+    30,
+    { min: 0, max: 3600 }
+  );
+  const changeMonitorIntervalSeconds = parsePositiveInt(
+    'CHANGE_MONITOR_INTERVAL_SECONDS',
+    env.CHANGE_MONITOR_INTERVAL_SECONDS,
+    10,
+    { min: 1, max: 3600 }
+  );
+  const changeMonitorTimeoutSeconds = parsePositiveInt(
+    'CHANGE_MONITOR_TIMEOUT_SECONDS',
+    env.CHANGE_MONITOR_TIMEOUT_SECONDS,
+    1800,
+    { min: 10, max: 24 * 60 * 60 }
+  );
 
   return {
     port,
@@ -137,6 +169,9 @@ function loadConfigFromEnv(env = process.env) {
 }
 
 module.exports = {
+  _test: {
+    resolveShutdownBin
+  },
   loadConfigFromEnv,
   parseBool,
   parsePositiveInt,

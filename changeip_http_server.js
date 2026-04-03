@@ -9,7 +9,11 @@
 const http = require('http');
 
 const { loadConfigFromEnv, safeTokenEquals } = require('./src/config');
-const { loadIpState } = require('./src/state');
+const {
+  isStateFileError,
+  loadIpState,
+  loadPendingChange
+} = require('./src/state');
 const { triggerChangeIp } = require('./src/change/trigger');
 const { startMonitor } = require('./src/monitor');
 const { getRuntimeMetricsSnapshot } = require('./src/runtime/metrics');
@@ -25,9 +29,21 @@ const SERVER_KEEP_ALIVE_TIMEOUT_MS = 5 * 1000;
 let config;
 try {
   config = loadConfigFromEnv(process.env);
+  loadIpState(config);
+  loadPendingChange(config);
 } catch (err) {
-  console.error('[changeip-http] config error:', String(err));
+  console.error('[changeip-http] startup error:', String(err));
   process.exit(1);
+}
+
+let FATAL_EXIT_SCHEDULED = false;
+
+function scheduleFatalExit(reason, err) {
+  const detail = String(err || reason || 'unknown');
+  console.error(`[changeip-http] fatal: ${reason}: ${detail}`);
+  if (FATAL_EXIT_SCHEDULED) return;
+  FATAL_EXIT_SCHEDULED = true;
+  setImmediate(() => process.exit(1));
 }
 
 function jsonResponse(res, statusCode, payload) {
@@ -61,14 +77,17 @@ function readJsonBody(req, res, { maxBytes = 1024 } = {}) {
     req.on('end', () => {
       if (responded) return resolve(null);
       const body = Buffer.concat(chunks, total).toString('utf8');
-      let parsed = null;
       try {
-        parsed = body ? JSON.parse(body) : {};
+        const parsed = body ? JSON.parse(body) : {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          jsonResponse(res, 400, { ok: false, error: 'json body must be an object' });
+          return resolve(null);
+        }
+        resolve(parsed);
       } catch (_err) {
         jsonResponse(res, 400, { ok: false, error: 'invalid json' });
         return resolve(null);
       }
-      resolve(parsed && typeof parsed === 'object' ? parsed : {});
     });
 
     req.on('error', () => {
@@ -93,7 +112,15 @@ function handleInfo(req, res) {
       return;
     }
 
-    const state = loadIpState(config);
+    let state;
+    try {
+      state = loadIpState(config);
+    } catch (err) {
+      console.error('[changeip-http] /info state error:', String(err));
+      if (isStateFileError(err)) scheduleFatalExit('state file error during /info', err);
+      jsonResponse(res, 500, { ok: false, error: 'state_error' });
+      return;
+    }
     jsonResponse(res, 200, {
       ok: true,
       server_label: config.serverLabel,
@@ -127,7 +154,12 @@ function handleChangeIp(req, res) {
       result = await triggerChangeIp(config, { force });
     } catch (err) {
       console.error('[changeip-http] /changeip error:', String(err));
-      result = { status: 500, body: { ok: false, error: 'internal_error' } };
+      if (isStateFileError(err)) {
+        scheduleFatalExit('state file error during /changeip', err);
+        result = { status: 500, body: { ok: false, error: 'state_error' } };
+      } else {
+        result = { status: 500, body: { ok: false, error: 'internal_error' } };
+      }
     }
     jsonResponse(res, result.status || 500, result.body || { ok: false, error: 'unknown_error' });
   });

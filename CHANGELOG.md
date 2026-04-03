@@ -2,9 +2,15 @@
 
 本项目以“稳定可长期运维”为目标；对外接口字段与部署行为尽量保持兼容。
 
-## Unreleased
+## 0.7.0
 
-- （暂无）
+- 破坏性更新：`ip-events` 契约版本提升到 `2026-04-03.v1`。`channel` 已经变成必带硬语义，因此不再沿用旧版本号混用新旧 sender。
+- 修复：`REPORT_CHANNEL` 现在在配置加载阶段就会按 `ip-events` 同一套规则校验；非法值会直接启动失败，不再等到 `/changeip` 或自然监测真正发事件时才报 `invalid channel`。
+- 边界：`script` / `exec` provider 明确收回到 Debian/Ubuntu 服务器环境，固定依赖 `/bin/bash`；非 Linux 开发机只在回归层跳过相关执行用例，不再通过生产代码提供运行时兼容。
+- 修复：当 `CHANGEIP_ENABLED=1` 且需要安排重启时，配置加载阶段现在要求系统存在 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；不再退回 PATH 里的 `shutdown` 再把失败留到运行时。
+- 修复：`/info` 与 `/changeip` 现在严格要求请求体为 JSON 对象；数组、数字、字符串等非对象 JSON 会直接返回 `400`，不再落到后续鉴权分支。
+- 契约：`ip-events` payload 统一改为始终显式携带 `channel`；空字符串继续表示禁用频道播报，不再保留“省略 channel”的旧语义。
+- 测试：回归脚本补充“空字符串合法、缺 `channel`/非法 `channel` 会被拒绝”的契约检查，避免两端文档与实现再次漂移。
 
 ## 0.6.0
 

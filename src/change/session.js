@@ -20,8 +20,7 @@ const {
   markChangeSessionStarted,
   markChangeSessionTerminalSent,
   markChangeSessionTimeoutStuckAlert,
-  recordChangeSessionError,
-  setChangeSessionOldIpv4
+  recordChangeSessionError
 } = require('./session/mutations');
 const { buildChangeStartedPayload, buildChangeTerminalPayload } = require('./session/payloads');
 const { sendChangeFailedEvent, sendChangeStartedEvent } = require('./session/events');
@@ -48,6 +47,5 @@ module.exports = {
   resolvePendingSessionContext,
   sendChangeFailedEvent,
   sendChangeStartedEvent,
-  setChangeSessionOldIpv4,
   startChangeSession
 };

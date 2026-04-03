@@ -1,3 +1,4 @@
+const { isStateFileError } = require('../state');
 const { fetchPublicIpv6 } = require('../ip/ipv6');
 const { loadChangeSession } = require('../change/session');
 const { recordMonitorTick, recordMonitorTickError } = require('../runtime/metrics');
@@ -31,6 +32,15 @@ async function runIpv6StartupProbe(config, logState) {
     logState.suppressedErrorCount = 0;
     logState.failing = true;
   }
+}
+
+let FATAL_MONITOR_EXIT_SCHEDULED = false;
+
+function scheduleFatalMonitorExit(reason, err) {
+  console.error(`[changeip-http] fatal monitor error: ${reason}: ${String(err || 'unknown')}`);
+  if (FATAL_MONITOR_EXIT_SCHEDULED) return;
+  FATAL_MONITOR_EXIT_SCHEDULED = true;
+  setImmediate(() => process.exit(1));
 }
 
 function startMonitor(config) {
@@ -132,6 +142,10 @@ function startMonitor(config) {
     } catch (err) {
       console.error('[changeip-http] monitor tick error:', String(err));
       recordMonitorTickError(err);
+      if (isStateFileError(err)) {
+        scheduleFatalMonitorExit('state file became unreadable/corrupt during monitor tick', err);
+        return;
+      }
     } finally {
       running = false;
       scheduleNextTick();

@@ -11,18 +11,27 @@ const {
   makeCaseFiles,
   postChangeIp,
   postInfo,
+  postRawJson,
   runWithServer,
   sleep,
   startEventSink,
   startHttpFlowMockPanel,
   startHttpFlowResilienceMock,
   startHttpFlowRetryAfterMock,
+  startIpChanger,
   startIpChangerExpectConfigError,
+  stopIpChanger,
   waitUntil,
   writeShellScript
 } = require('./harness');
 
 const TERMINAL_EVENT_SET = new Set(['change_succeeded', 'change_no_change', 'change_failed']);
+
+function shouldSkipProviderExecutionCase(label) {
+  if (process.platform === 'linux') return false;
+  console.log(`[regression] skip provider execution case on ${process.platform}: ${label}`);
+  return true;
+}
 
 function buildPendingSessionFixture({
   opId,
@@ -227,6 +236,7 @@ async function startFlakyEventSink({ failCount = 1, failStatusCode = 500 } = {})
 }
 
 async function testConcurrentOnlyOneAccepted(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('script concurrency')) return;
   const files = makeCaseFiles(tmpRoot, 'concurrent');
   const scriptPath = path.join(files.dir, 'slow_success.sh');
   writeShellScript(scriptPath, 'sleep 3\nexit 0');
@@ -295,6 +305,7 @@ async function testRejectNonRegularFile(tmpRoot, sink) {
 }
 
 async function testFailFastScriptDoesNotLeavePending(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('script fail-fast terminal convergence')) return;
   const files = makeCaseFiles(tmpRoot, 'fail_fast');
   const scriptPath = path.join(files.dir, 'fail_fast.sh');
   writeShellScript(scriptPath, 'exit 2');
@@ -334,6 +345,7 @@ async function testFailFastScriptDoesNotLeavePending(tmpRoot, sink) {
 }
 
 async function testFailFastScriptRetriesFailedTerminalReport(tmpRoot, _sink) {
+  if (shouldSkipProviderExecutionCase('script fail-fast retry terminal report')) return;
   const files = makeCaseFiles(tmpRoot, 'fail_fast_retry_terminal_report');
   const scriptPath = path.join(files.dir, 'fail_fast.sh');
   writeShellScript(scriptPath, 'exit 2');
@@ -507,6 +519,7 @@ async function testInvalidPendingMissingOpIdIsClearedWhenChangeipDisabled(tmpRoo
 }
 
 async function testExecProviderOnlyOneAccepted(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('exec concurrency')) return;
   const files = makeCaseFiles(tmpRoot, 'exec_concurrent');
   const port = await getFreePort();
   const env = buildEnv({
@@ -529,6 +542,7 @@ async function testExecProviderOnlyOneAccepted(tmpRoot, sink) {
 }
 
 async function testFailFastExecDoesNotLeavePending(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('exec fail-fast terminal convergence')) return;
   const files = makeCaseFiles(tmpRoot, 'exec_fail_fast');
   const port = await getFreePort();
   const env = buildEnv({
@@ -1015,7 +1029,109 @@ async function testRequireProviderWhenChangeipEnabled(tmpRoot, sink) {
   await startIpChangerExpectConfigError(env, 'CHANGEIP_PROVIDER is required when CHANGEIP_ENABLED=1');
 }
 
+async function testStartupFailsOnMalformedPendingFile(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'malformed_pending_file');
+  fs.writeFileSync(files.pendingFile, '{"op_id":', 'utf8');
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await startIpChangerExpectConfigError(env, 'failed to load pending change file');
+}
+
+async function testRejectNonObjectJsonBodies(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'reject_non_object_json_bodies');
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const infoResp = await postRawJson(port, '/info', '[]');
+    assert(infoResp.status === 400, `expected /info with array JSON to return 400, got ${infoResp.status}`);
+    assert(
+      infoResp.json?.error === 'json body must be an object',
+      `unexpected /info error body: ${infoResp.text}`
+    );
+
+    const changeResp = await postRawJson(port, '/changeip', '123');
+    assert(changeResp.status === 400, `expected /changeip with primitive JSON to return 400, got ${changeResp.status}`);
+    assert(
+      changeResp.json?.error === 'json body must be an object',
+      `unexpected /changeip error body: ${changeResp.text}`
+    );
+  });
+}
+
+async function testMissingOldIpv4DoesNotRecoverFromIpState(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'missing_old_ipv4_no_recovery');
+  const nowMs = Date.now();
+  const opId = '20260301T010203Z_regression_ipv4_missing1';
+
+  fs.writeFileSync(files.stateFile, JSON.stringify({
+    notified_ipv4: '203.0.113.9',
+    observed_ipv4: '203.0.113.9',
+    updated_at: new Date(nowMs - 60_000).toISOString()
+  }), 'utf8');
+  writePendingSessionFixture(files.pendingFile, {
+    opId,
+    oldIpv4: null,
+    startedAt: new Date(nowMs - 20_000).toISOString(),
+    startedSent: true,
+    monitorAfterMs: nowMs - 10_000,
+    timeoutAtMs: nowMs - 1000
+  });
+  const beforeEvents = sink.events.length;
+
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'exec',
+      endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+      execCommand: 'sleep 1; exit 0',
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGEIP_ENABLED: '0',
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1'
+  };
+
+  await runWithServer(env, async () => {
+    await waitUntil(() => !fs.existsSync(files.pendingFile), {
+      timeoutMs: 6000,
+      intervalMs: 150,
+      label: 'expected pending session with missing old_ipv4 to clear after terminal report'
+    });
+
+    const newEvents = sink.events.slice(beforeEvents);
+    const failed = newEvents.filter((e) => (
+      e.body?.event === 'change_failed' &&
+      String(e.body?.op_id || '') === opId &&
+      e.body?.reason === 'old_ipv4_unknown'
+    ));
+    assert(failed.length >= 1, 'expected missing old_ipv4 session to fail with old_ipv4_unknown');
+    assert(
+      !failed.some((e) => String(e.body?.old_ipv4 || '').trim() === '203.0.113.9'),
+      'expected pending runner not to recover old_ipv4 from ip_state'
+    );
+  });
+}
+
 async function testForceClearsTimedOutPendingSession(tmpRoot, _sink) {
+  if (shouldSkipProviderExecutionCase('force clears timed-out pending via new exec session')) return;
   const files = makeCaseFiles(tmpRoot, 'force_clear_timed_out_pending');
   const oldOpId = '20260301T010203Z_regression_forceclear1';
   writeTimedOutPendingSession(files.pendingFile, { opId: oldOpId });
@@ -1061,8 +1177,8 @@ async function testForceClearsTimedOutPendingSession(tmpRoot, _sink) {
   }
 }
 
-async function testForceClearsComputedTimedOutPendingSessionWithInvalidTimeout(tmpRoot, _sink) {
-  const files = makeCaseFiles(tmpRoot, 'force_clear_computed_timed_out_pending');
+async function testForceDoesNotClearTimedOutLookingPendingSessionWithInvalidTimeout(tmpRoot, _sink) {
+  const files = makeCaseFiles(tmpRoot, 'force_refuse_invalid_timeout_pending_old');
   const nowMs = Date.now();
   const oldOpId = '20260301T010203Z_regression_forceclear2';
   writePendingSessionFixture(files.pendingFile, {
@@ -1097,18 +1213,13 @@ async function testForceClearsComputedTimedOutPendingSessionWithInvalidTimeout(t
       assert(conflict.json?.op_id === oldOpId, `expected conflict op_id=${oldOpId}, got: ${conflict.text}`);
 
       const forced = await postChangeIp(port, { force: true });
-      assert(forced.status === 200, `expected 200, got ${forced.status}`);
-      assert(forced.json?.ok === true, `expected ok=true, got: ${forced.text}`);
-      assert(
-        String(forced.json?.op_id || '') && forced.json.op_id !== oldOpId,
-        `expected new op_id != ${oldOpId}, got: ${forced.text}`
-      );
-
-      assert(fs.existsSync(files.pendingFile), 'expected pending_change.json to exist after forced /changeip accepted');
+      assert(forced.status === 409, `expected 409, got ${forced.status}`);
+      assert(forced.json?.op_id === oldOpId, `expected forced conflict op_id=${oldOpId}, got: ${forced.text}`);
+      assert(fs.existsSync(files.pendingFile), 'expected pending_change.json to remain after refused force');
       const pending = JSON.parse(fs.readFileSync(files.pendingFile, 'utf8'));
       assert(
-        String(pending.op_id || '') === String(forced.json.op_id || ''),
-        `expected pending session op_id to match response op_id, got: ${JSON.stringify(pending)}`
+        String(pending.op_id || '') === oldOpId,
+        `expected pending op_id to remain ${oldOpId}, got: ${JSON.stringify(pending)}`
       );
     });
   } finally {
@@ -1255,6 +1366,7 @@ async function testTimedOutPendingSessionReportsStuckAlertOnIpEventTimeout(tmpRo
 }
 
 async function testPendingSessionDoesNotFailWhenProviderNotMarkedStartedYet(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('pending session provider start probe')) return;
   const files = makeCaseFiles(tmpRoot, 'pending_provider_starting');
   writeStartingPendingSession(files.pendingFile, {
     opId: '20260228T101500Z_regression_ipv4_starting2'
@@ -1286,6 +1398,45 @@ async function testPendingSessionDoesNotFailWhenProviderNotMarkedStartedYet(tmpR
       `expected no change_started events while provider_started=false, got ${started.length}`
     );
   });
+}
+
+async function testRuntimeMalformedPendingFileCausesProcessExit(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'runtime_malformed_pending_file');
+  const port = await getFreePort();
+  const env = {
+    ...buildEnv({
+      port,
+      provider: 'exec',
+      endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+      execCommand: 'sleep 3; exit 0',
+      stateFile: files.stateFile,
+      pendingFile: files.pendingFile
+    }),
+    CHANGE_MONITOR_INTERVAL_SECONDS: '1'
+  };
+
+  const { proc, logs } = await startIpChanger(env);
+  try {
+    fs.writeFileSync(files.pendingFile, '{"op_id":', 'utf8');
+    await waitUntil(() => proc.exitCode !== null, {
+      timeoutMs: 6000,
+      intervalMs: 100,
+      label: 'expected process to exit after pending_change.json becomes malformed at runtime'
+    });
+
+    assert(proc.exitCode !== 0, `expected non-zero exit code, got ${proc.exitCode}`);
+    const output = logs();
+    assert(
+      output.includes('fatal monitor error') || output.includes('fatal pending trigger error'),
+      `expected fatal state-file log, got: ${output}`
+    );
+    assert(
+      output.includes('failed to load pending change file'),
+      `expected pending change load error in logs, got: ${output}`
+    );
+  } finally {
+    await stopIpChanger(proc);
+  }
 }
 
 const CASES = [
@@ -1354,20 +1505,36 @@ const CASES = [
     run: testRequireProviderWhenChangeipEnabled
   },
   {
+    title: 'startup fails fast when pending_change.json is malformed',
+    run: testStartupFailsOnMalformedPendingFile
+  },
+  {
+    title: 'http endpoints reject non-object JSON bodies with 400',
+    run: testRejectNonObjectJsonBodies
+  },
+  {
+    title: 'pending session with missing old_ipv4 does not recover baseline from ip_state',
+    run: testMissingOldIpv4DoesNotRecoverFromIpState
+  },
+  {
     title: 'force=true clears a timed-out pending session and allows a new /changeip session to start',
     run: testForceClearsTimedOutPendingSession
   },
   {
-    title: 'force=true clears a computed-timed-out pending session when timeout_at_ms is invalid',
-    run: testForceClearsComputedTimedOutPendingSessionWithInvalidTimeout
+    title: 'force=true refuses to clear an old pending session when timeout_at_ms is invalid',
+    run: testForceDoesNotClearTimedOutLookingPendingSessionWithInvalidTimeout
   },
   {
-    title: 'force=true refuses to clear a computed-not-timed-out pending session when timeout_at_ms is invalid',
+    title: 'force=true refuses to clear a recent pending session when timeout_at_ms is invalid',
     run: testForceDoesNotClearComputedNotTimedOutPendingSessionWithInvalidTimeout
   },
   {
     title: 'pending session does not emit change_failed when provider_started is false but no failure reason is recorded',
     run: testPendingSessionDoesNotFailWhenProviderNotMarkedStartedYet
+  },
+  {
+    title: 'runtime malformed pending_change.json causes process exit instead of degraded retries',
+    run: testRuntimeMalformedPendingFileCausesProcessExit
   },
   {
     title: 'timed-out pending session keeps retrying and raises stuck alert when ip-events returns 500',

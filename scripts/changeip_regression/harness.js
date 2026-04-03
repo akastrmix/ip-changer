@@ -34,20 +34,24 @@ ${body}
   fs.writeFileSync(filePath, content, { mode: 0o700 });
 }
 
-function httpRequest({ port, method = 'GET', pathname = '/', body }) {
+function httpRequest({ port, method = 'GET', pathname = '/', body, rawBody, headers }) {
   return new Promise((resolve, reject) => {
-    const payload = body === undefined ? null : JSON.stringify(body);
+    const payload = rawBody !== undefined
+      ? String(rawBody)
+      : (body === undefined ? null : JSON.stringify(body));
+    const requestHeaders = payload
+      ? {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+          ...(headers || {})
+        }
+      : headers;
     const req = http.request({
       host: '127.0.0.1',
       port,
       method,
       path: pathname,
-      headers: payload
-        ? {
-            'content-type': 'application/json',
-            'content-length': Buffer.byteLength(payload)
-          }
-        : undefined
+      headers: requestHeaders
     }, (res) => {
       const chunks = [];
       res.on('data', (chunk) => chunks.push(chunk));
@@ -469,6 +473,18 @@ async function postInfo(port) {
   });
 }
 
+async function postRawJson(port, pathname, rawBody) {
+  return httpRequest({
+    port,
+    method: 'POST',
+    pathname,
+    rawBody,
+    headers: {
+      'content-type': 'application/json'
+    }
+  });
+}
+
 async function runWithServer(env, fn) {
   const { proc, logs } = await startIpChanger(env);
   try {
@@ -489,9 +505,12 @@ module.exports = {
   makeCaseFiles,
   postChangeIp,
   postInfo,
+  postRawJson,
   runWithServer,
   sleep,
   startEventSink,
+  startIpChanger,
+  stopIpChanger,
   startHttpFlowMockPanel,
   startHttpFlowResilienceMock,
   startHttpFlowRetryAfterMock,

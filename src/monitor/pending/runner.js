@@ -1,5 +1,4 @@
 const { fetchPublicIpv4, isValidIpv4 } = require('../../ip/ipv4');
-const { loadIpState } = require('../../state');
 const {
   buildChangeTerminalPayload,
   clearChangeSessionIfCurrent,
@@ -7,7 +6,6 @@ const {
   markChangeSessionOfflineObserved,
   recordChangeSessionError,
   resolvePendingSessionContext,
-  setChangeSessionOldIpv4,
   sendChangeStartedEvent
 } = require('../../change/session');
 const { computePendingNextDueMs } = require('../helpers');
@@ -24,20 +22,6 @@ const {
 const { isStrictPendingSchema } = require('./validate');
 
 let PENDING_RUNNER_IN_FLIGHT = null;
-
-function resolveOldIpv4Baseline(config, pending, opId) {
-  if (isValidIpv4(pending?.old_ipv4)) return pending.old_ipv4;
-
-  const state = loadIpState(config);
-  const fallback = isValidIpv4(state?.notified_ipv4)
-    ? state.notified_ipv4
-    : (isValidIpv4(state?.observed_ipv4) ? state.observed_ipv4 : '');
-  if (!fallback) return null;
-
-  // Best-effort: keep pending session baseline consistent after recovering from ip_state.
-  setChangeSessionOldIpv4(config, opId, fallback);
-  return fallback;
-}
 
 async function handlePendingChange(config) {
   const opts = arguments.length > 1 && arguments[1] && typeof arguments[1] === 'object' ? arguments[1] : {};
@@ -259,7 +243,7 @@ async function handlePendingChange(config) {
       return { handled: true, nextDueMs };
     }
 
-    const oldIpv4 = resolveOldIpv4Baseline(config, pending, opId);
+    const oldIpv4 = isValidIpv4(pending?.old_ipv4) ? pending.old_ipv4 : null;
     const providerRuntimeFailedReason = pending.provider_started === true ? providerFailedReason : '';
     let terminal;
     if (!oldIpv4) {

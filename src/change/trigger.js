@@ -1,33 +1,24 @@
-const { fetchPublicIpv4, isValidIpv4 } = require('../ip/ipv4');
-const { loadIpState, saveIpState } = require('../state');
+const { isValidIpv4 } = require('../ip/ipv4');
+const { isStateFileError, loadIpState } = require('../state');
 const { makeChangeOpId } = require('../opId');
 const { getProvider } = require('../providers');
 const { compileFlowFromFile } = require('../providers/httpFlow/compile');
 const {
   clearChangeSession,
   loadChangeSession,
-  setChangeSessionOldIpv4,
   resolvePendingSessionContext,
   startChangeSession
 } = require('./session');
-const { isValidRebootDelayMinutes } = require('./session/shared');
 const { handlePendingChange } = require('../monitor/pending');
 const { recordChangeipRequest } = require('../runtime/metrics');
 
-function computeFallbackTimeoutAtMs(config, pending) {
-  const startedAtMs = Date.parse(String(pending?.started_at || '').trim());
-  if (!Number.isFinite(startedAtMs)) return null;
+let FATAL_TRIGGER_EXIT_SCHEDULED = false;
 
-  const rebootDelayMinutes = Number(pending?.reboot_delay_minutes);
-  const rebootDelay = isValidRebootDelayMinutes(rebootDelayMinutes)
-    ? rebootDelayMinutes
-    : config.rebootDelayMinutes;
-  const rebootDelayMs = rebootDelay === -1 ? 0 : Math.max(rebootDelay, 1) * 60 * 1000;
-
-  const monitorAfterMs = startedAtMs + rebootDelayMs + config.changeMonitorStartDelaySeconds * 1000;
-  const timeoutAtMs = monitorAfterMs + config.changeMonitorTimeoutSeconds * 1000;
-  if (!Number.isFinite(timeoutAtMs) || timeoutAtMs <= 0) return null;
-  return timeoutAtMs;
+function scheduleFatalTriggerExit(reason, err) {
+  console.error(`[changeip-http] fatal pending trigger error: ${reason}: ${String(err || 'unknown')}`);
+  if (FATAL_TRIGGER_EXIT_SCHEDULED) return;
+  FATAL_TRIGGER_EXIT_SCHEDULED = true;
+  setImmediate(() => process.exit(1));
 }
 
 function validateProviderConfig(config) {
@@ -97,10 +88,8 @@ function maybeForceClearInFlightSession(config, {
   const terminalSent = inFlight?.terminal_sent === true;
   const context = resolvePendingSessionContext(config, inFlight);
   const knownTimeoutAtMs = context ? context.timeoutAtMs : null;
-  const computedTimeoutAtMs = knownTimeoutAtMs ? null : computeFallbackTimeoutAtMs(config, inFlight);
   const canForceClear = terminalSent ||
-    (Number.isFinite(knownTimeoutAtMs) && nowMs >= knownTimeoutAtMs) ||
-    (Number.isFinite(computedTimeoutAtMs) && nowMs >= computedTimeoutAtMs);
+    (Number.isFinite(knownTimeoutAtMs) && nowMs >= knownTimeoutAtMs);
   if (!canForceClear) {
     return respond(
       409,
@@ -111,7 +100,7 @@ function maybeForceClearInFlightSession(config, {
 
   const why = terminalSent
     ? 'terminal_sent'
-    : (knownTimeoutAtMs ? 'timed_out' : 'computed_timed_out');
+    : 'timed_out';
   console.warn(`[changeip-http] forcing pending session clear: op_id=${inFlightOpId} reason=${why}`);
   const cleared = clearChangeSession(config);
   if (!cleared) {
@@ -173,50 +162,14 @@ function maybeStartChangeSession(config, {
   );
 }
 
-function scheduleBaselineIpv4Backfill(config, {
-  opId,
-  startedAt
-}) {
-  const run = async () => {
-    try {
-      const observed = await fetchPublicIpv4({ userAgent: 'ip-changer', timeoutMs: 5000 });
-      if (!isValidIpv4(observed)) return;
-
-      const updated = setChangeSessionOldIpv4(config, opId, observed);
-      if (!updated) return;
-
-      // Reload latest state to avoid clobbering fields written by concurrent monitor/report paths.
-      const nextState = loadIpState(config);
-      nextState.notified_ipv4 = observed;
-      nextState.observed_ipv4 = observed;
-      nextState.updated_at = startedAt.toISOString();
-      const saved = saveIpState(config, nextState);
-      if (!saved.ok) {
-        console.error('[changeip-http] failed to persist baseline ipv4 state:', String(saved.error));
-      }
-    } catch {
-      // ignore: if lookup fails, pending runner will continue using ip_state fallback / timeout rules.
-    }
-  };
-
-  try {
-    if (typeof setImmediate === 'function') {
-      setImmediate(() => {
-        run().catch(() => {});
-      });
-    } else {
-      run().catch(() => {});
-    }
-  } catch {
-    // ignore
-  }
-}
-
 function schedulePendingRunner(config, opId) {
   // Single-runner: provider start + reboot scheduling is executed by the pending session runner.
   try {
     const schedule = () => handlePendingChange(config, { mode: 'trigger', opId }).catch((err) => {
       console.error('[changeip-http] async pending trigger failed:', String(err || 'unknown'));
+      if (isStateFileError(err)) {
+        scheduleFatalTriggerExit('state file became unreadable/corrupt during pending trigger', err);
+      }
     });
     if (typeof setImmediate === 'function') {
       setImmediate(schedule);
@@ -270,11 +223,6 @@ async function triggerChangeIp(config, { force = false } = {}) {
     respond
   });
   if (sessionStartError) return sessionStartError;
-
-  if (!oldIpv4) {
-    // Do not block /changeip response on external IPv4 lookup.
-    scheduleBaselineIpv4Backfill(config, { opId, startedAt });
-  }
 
   schedulePendingRunner(config, opId);
 

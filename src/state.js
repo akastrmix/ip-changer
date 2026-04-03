@@ -1,6 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 
+class StateFileError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StateFileError';
+  }
+}
+
 function ensureDirFor(filePath) {
   const dir = path.dirname(filePath);
   fs.mkdirSync(dir, { recursive: true });
@@ -11,14 +18,25 @@ function ensureDirFor(filePath) {
   }
 }
 
-function loadJsonFile(filePath) {
+function readJsonObjectFile(filePath, label) {
   try {
     const raw = fs.readFileSync(filePath, 'utf8');
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${label} must contain a JSON object`);
+    }
+    return { exists: true, value: parsed };
+  } catch (err) {
+    if (err && err.code === 'ENOENT') {
+      return { exists: false, value: null };
+    }
+    const detail = err && err.message ? err.message : String(err);
+    throw new StateFileError(`failed to load ${label} ${filePath}: ${detail}`);
   }
+}
+
+function isStateFileError(err) {
+  return err instanceof StateFileError;
 }
 
 function fsyncDirBestEffort(dirPath) {
@@ -82,7 +100,8 @@ function deleteFile(filePath) {
 }
 
 function loadIpState(config) {
-  return loadJsonFile(config.ipStateFile) || {};
+  const result = readJsonObjectFile(config.ipStateFile, 'ip state file');
+  return result.exists ? result.value : {};
 }
 
 function saveIpState(config, state) {
@@ -90,8 +109,8 @@ function saveIpState(config, state) {
 }
 
 function loadPendingChange(config) {
-  const obj = loadJsonFile(config.pendingChangeFile);
-  return obj && typeof obj === 'object' ? obj : null;
+  const result = readJsonObjectFile(config.pendingChangeFile, 'pending change file');
+  return result.exists ? result.value : null;
 }
 
 function savePendingChange(config, pending) {
@@ -103,6 +122,8 @@ function clearPendingChange(config) {
 }
 
 module.exports = {
+  StateFileError,
+  isStateFileError,
   loadIpState,
   saveIpState,
   loadPendingChange,

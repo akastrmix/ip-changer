@@ -50,9 +50,10 @@ CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容
 请求：
 
 - `POST /changeip`
-- JSON `{ "token": "<AUTH_TOKEN>" }`
+- JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
+  - 若请求体不是 JSON 对象（例如 `[]`、`123`），服务会直接返回 `400`，不会再落到 `403 forbidden`
   - 可选：`{ "force": true }` 用于清理“已超时”的会话并重新触发（一般仅用于人工排障；bot 默认不应使用）
-    - 若会话超时字段损坏，会基于 `started_at` + 当前配置推导超时；仅在确认已超时后才会清理
+    - 仅当会话的 `timeout_at_ms` 合法且已超时（或 `terminal_sent=true`）时才允许清理；超时字段损坏时不会做推导式清理
 
 返回（节选）：
 
@@ -62,6 +63,7 @@ CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容
 说明：
 
 - 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，provider 触发仍会执行，但**不会**执行重启。
+- 若 VPS 设置 `REBOOT_DELAY_MINUTES=1..15`，ip-changer 会在启动时要求系统存在 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；缺失时服务不会启动。
 - 若该 VPS 已有进行中的换 IP 会话，`/changeip` 会返回 `409 change already in progress`，并携带现有 `op_id`（CarpoolNotifier 应按“已在进行中”处理，而不是重复触发）。
 - `/changeip` 的 `ok=true` 表示“触发已接受”，不保证此时 provider 已完成启动探测；provider 启动/终态以 `change_*` 事件为准。
 
@@ -80,7 +82,8 @@ CarpoolNotifier 用它来获取：
 请求：
 
 - `POST /info`
-- JSON `{ "token": "<AUTH_TOKEN>" }`
+- JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
+  - 若请求体不是 JSON 对象（例如 `[]`、`123`），服务会直接返回 `400`
 
 ## 3. 方向 B：ip-changer → CarpoolNotifier（事件流上报）
 
@@ -127,7 +130,7 @@ VPS 侧配置：
 - 触发后等待 `CHANGE_MONITOR_START_DELAY_SECONDS` 再尝试获取公网 IPv4
   - 若设置了重启延迟（`REBOOT_DELAY_MINUTES=1..15`），则会在“预计重启时间”之后再加上该延迟，避免在重启前误判为 `change_no_change`
 - 获取到合法公网 IPv4 后即可判定终态：
-  - `old_ipv4` 缺失 → `change_failed`（`old_ipv4_unknown`）
+  - `old_ipv4` 缺失 → `change_failed`（`old_ipv4_unknown`）；`ip-changer` 不会再从 `ip_state` 或额外公网查询回填该基线
   - `!= old_ipv4` → `change_succeeded`
   - `== old_ipv4`：
     - 若安排了重启（`REBOOT_DELAY_MINUTES=1..15`）：立即判定为 `change_no_change`
