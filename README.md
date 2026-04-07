@@ -458,10 +458,11 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
    - `PORT`：HTTP 端口（默认 `8787`）。
    - `CHANGEIP_PROVIDER`：对应 provider（`script` / `exec` / `http_flow`）。
 3. 在 CarpoolNotifier（Cloudflare Worker）中为该 `SERVER_LABEL` 配置“地址 + token”映射：
-   - `CHANGEIP_ENDPOINTS_JSON`（vars）：`{"<SERVER_LABEL>":"http://<VPS_IP>:8787/changeip"}`
+   - `CHANGEIP_ENDPOINTS_JSON`（vars）：`{"<SERVER_LABEL>":"http://<VPS_IP>:8787"}`
+     - 这里只填 ip-changer 服务器根地址；CarpoolNotifier 会自动推导 `/changeip` 与 `/info`
    - `CHANGEIP_TOKENS_JSON`（secret）：`{"<SERVER_LABEL>":"<AUTH_TOKEN>"}`
-   - `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记为 provider（例如 `CMHK:script` / `CMHK:exec` / `CMHK:http_flow`）
-   - 可选：`CHANGEIP_INFO_ENDPOINTS_JSON`（vars）：如不写，CarpoolNotifier 会把 `/changeip` 自动推导为 `/info`
+   - `CHANGEIP_SERVERS`（vars）：确保包含该服务器；bot 侧可调用的 ip-changer 统一标记为 `script`（例如 `CMHK:script`）
+     - `CHANGEIP_PROVIDER=exec/http_flow` 只属于本机 ip-changer 内部触发方式，不能原样写到 CarpoolNotifier 的 `CHANGEIP_SERVERS`
 4. 重新部署 / 启动 CarpoolNotifier，使其读取新的配置。
 5. 用管理员账号向 Telegram 机器人发送 `/changeip`：
    - 机器人会校验你是否管理员。

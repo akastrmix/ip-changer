@@ -398,10 +398,14 @@ fi
 echo
 if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   echo "请在 CarpoolNotifier（Cloudflare Worker）中为该服务器配置："
-  echo "  - 在 wrangler.toml 的 vars 里，把此服务器加入 CHANGEIP_ENDPOINTS_JSON："
-  echo "      {\"$SERVER_LABEL\":\"http://<VPS_IP>:$PORT/changeip\", ...}"
-  echo "  - 把此服务器加入 CHANGEIP_SERVERS（并标记为 provider）："
-  echo "      $SERVER_LABEL:$CHANGEIP_PROVIDER"
+  echo "  - 在 wrangler.toml 的 vars 里，把此服务器根地址加入 CHANGEIP_ENDPOINTS_JSON："
+  echo "      {\"$SERVER_LABEL\":\"http://<VPS_IP>:$PORT\", ...}"
+  echo "    CarpoolNotifier 会自动推导 /changeip 与 /info；不要在这里填 /changeip 路径。"
+  echo "  - 把此服务器加入 CHANGEIP_SERVERS（bot 侧可调用的 ip-changer 统一标记为 script）："
+  echo "      $SERVER_LABEL:script"
+  if [ "$CHANGEIP_PROVIDER" != "script" ]; then
+    echo "    注意：本机 CHANGEIP_PROVIDER=$CHANGEIP_PROVIDER 只属于 ip-changer 内部 provider；CarpoolNotifier 侧仍写 script。"
+  fi
   echo "  - 使用 secret 配置 CHANGEIP_TOKENS_JSON（JSON 需包含所有服务器的条目）："
   echo "      wrangler secret put CHANGEIP_TOKENS_JSON"
   echo "    并填入：{\"$SERVER_LABEL\":\"$AUTH_TOKEN\", ...}"

@@ -28,7 +28,7 @@
     - `REPORT_CHANNEL` “允许为空=禁用频道播报”的语义
   - 快速定位（对接文件）：
     - 本仓库：`docs/SPEC.md`、`docs/INTEGRATION.md`、`src/contracts/ipEvents.js`
-    - CarpoolNotifier：`docs/IP_CHANGER.md`、`docs/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`、`src/services/ipChanges/ipEvents.js`
+    - CarpoolNotifier：`docs/changeip/IP_CHANGER.md`、`docs/changeip/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`
   - 交付前必须跑：
     - 本仓库：`node scripts/changeip_regression.js`
     - CarpoolNotifier：`bash scripts/check.sh`

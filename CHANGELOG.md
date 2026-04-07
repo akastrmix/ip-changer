@@ -2,6 +2,10 @@
 
 本项目以“稳定可长期运维”为目标；对外接口字段与部署行为尽量保持兼容。
 
+## Unreleased
+
+- 文档：修正 `install.sh` 安装完成提示、README、AGENTS 与对接文档中的 CarpoolNotifier 配置示例；`CHANGEIP_ENDPOINTS_JSON` 现在只填 ip-changer 根地址，bot 侧 `CHANGEIP_SERVERS` 对可调用 ip-changer 统一写 `LABEL:script`，不再把本机 `exec/http_flow` provider 原样写入 bot 配置。
+
 ## 0.7.0
 
 - 破坏性更新：`ip-events` 契约版本提升到 `2026-04-03.v1`。`channel` 已经变成必带硬语义，因此不再沿用旧版本号混用新旧 sender。

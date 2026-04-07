@@ -43,9 +43,11 @@
 
 CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容）：
 
-- `CHANGEIP_ENDPOINTS_JSON`（vars）：例如 `{"CMHK":"http://<VPS_IP>:8787/changeip"}`
+- `CHANGEIP_ENDPOINTS_JSON`（vars）：例如 `{"CMHK":"http://<VPS_IP>:8787"}`
+  - 只填 ip-changer 服务器根地址；CarpoolNotifier 会自动推导 `/changeip` 与 `/info`
 - `CHANGEIP_TOKENS_JSON`（secret）：例如 `{"CMHK":"<AUTH_TOKEN>"}`（必须等于 VPS 上 `AUTH_TOKEN`）
-- `CHANGEIP_SERVERS`（vars）：确保包含该服务器并标记 provider（例如 `CMHK:script` / `CMHK:exec` / `CMHK:http_flow`）
+- `CHANGEIP_SERVERS`（vars）：确保包含该服务器；bot 侧可调用的 ip-changer 统一标记为 `script`（例如 `CMHK:script`）
+  - `CHANGEIP_PROVIDER=exec/http_flow` 只属于本机 ip-changer 内部 provider，不能原样写到 CarpoolNotifier 的 `CHANGEIP_SERVERS`
 
 请求：
 
@@ -207,7 +209,7 @@ VPS 侧配置：
 快速定位（对接文件）：
 
 - 本仓库：`docs/SPEC.md`、`src/contracts/ipEvents.js`
-- CarpoolNotifier：`docs/IP_CHANGER.md`、`docs/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`
+- CarpoolNotifier：`docs/changeip/IP_CHANGER.md`、`docs/changeip/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`
 
 交付前必须跑：
 
