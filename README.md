@@ -54,7 +54,12 @@
 - `exec` provider：准备可执行命令（`CHANGEIP_EXEC_COMMAND`）
 - `http_flow` provider：准备 flow JSON 文件（`CHANGEIP_HTTP_FLOW_FILE`）
 
-如果启用 `/ipquality`，你需要先把 IPQuality 脚本固定到 VPS 本地某个绝对路径（例如 `/root/IPQuality/ip.sh`）。本项目不会自动下载或自动更新该脚本。
+如果启用 `/ipquality`，优先使用仓库内固定版本：
+
+- `vendor/ipquality/ip.sh`
+- 安装后常见绝对路径：`/root/ip-changer/vendor/ipquality/ip.sh`
+
+ip-changer 不会在运行时 `curl | bash` 拉最新版；更新 IPQuality 应随仓库更新一起审查、提交、部署。
 
 `script` / `exec` provider 明确以 Debian/Ubuntu 服务器环境为目标，依赖 `/bin/bash`；不再为 Windows 开发机做运行时兼容分支。
 
@@ -334,7 +339,34 @@ cd ip-changer   # 仓库目录
 
 > 替换 `https://github.com/<your-name>/ip-changer.git` 为你自己的仓库地址。
 
-### 4.2 确认 `/changeip` provider 资源可用（仅在启用时）
+### 4.2 确认 IPQuality 脚本可用（仅在启用 `/ipquality` 时）
+
+仓库自带固定版本的 IPQuality 脚本。先确认文件存在：
+
+```bash
+ls -l /root/ip-changer/vendor/ipquality/ip.sh
+```
+
+再安装脚本运行时，如果你选择启用 `/ipquality`，这一项直接回车使用默认值即可：
+
+```text
+IPQuality 脚本绝对路径 [默认 /root/ip-changer/vendor/ipquality/ip.sh]:
+```
+
+`/ipquality` 运行时会执行：
+
+```bash
+/bin/bash /root/ip-changer/vendor/ipquality/ip.sh -n
+```
+
+其中 `-n` 表示跳过 IPQuality 自己的系统检测/依赖安装；请先安装运行依赖：
+
+```bash
+apt update
+apt install -y jq curl bc netcat-openbsd dnsutils iproute2
+```
+
+### 4.3 确认 `/changeip` provider 资源可用（仅在启用时）
 
 如果你计划启用 `/changeip`，请先准备 provider 对应资源：
 
@@ -342,7 +374,7 @@ cd ip-changer   # 仓库目录
 - `exec`：确认命令可在 root 环境直接执行
 - `http_flow`：确认 flow JSON 文件存在且可读，并根据面板实际请求链填写步骤
 
-### 4.3 确认 Node.js 可用
+### 4.4 确认 Node.js 可用
 
 ```bash
 node -v
@@ -355,7 +387,7 @@ apt update
 apt install -y nodejs
 ```
 
-### 4.4 运行安装脚本
+### 4.5 运行安装脚本
 
 运行安装脚本：
 
@@ -389,7 +421,8 @@ chmod +x install.sh uninstall.sh
      - 事件流上报会自动启用（`IP_EVENTS_ENABLED=1`）
    - 是否启用 `/ipquality`（默认关闭）
      - 若启用：输入 `IPQUALITY_SCRIPT_PATH`
-     - 安装脚本不会帮你下载 IPQuality；若路径不存在，只会给出警告，等真正调用 `/ipquality` 时再按当前文件状态返回错误
+     - 默认路径为当前仓库内的 `vendor/ipquality/ip.sh`
+     - 若你手动填的路径不存在，只会给出警告；等真正调用 `/ipquality` 时再按当前文件状态返回错误
    - 入站鉴权密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
       - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空=禁用频道播报；非空时必须是合法频道用户名或负数 chat_id）
@@ -421,7 +454,7 @@ systemctl status changeip-http
 ss -tlnp | grep 8787   # 如使用默认端口
 ```
 
-### 4.5 手动验证 HTTP 服务
+### 4.6 手动验证 HTTP 服务
 
 在 VPS 上本机访问：
 
@@ -651,7 +684,7 @@ node scripts/changeip_regression.js
   A: 可以。在仓库目录直接运行：
   ```bash
   AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_PROVIDER=script CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=1 \
-  IPQUALITY_ENABLED=1 IPQUALITY_SCRIPT_PATH=/root/IPQuality/ip.sh IPQUALITY_TIMEOUT_SECONDS=600 \
+  IPQUALITY_ENABLED=1 IPQUALITY_SCRIPT_PATH=/root/ip-changer/vendor/ipquality/ip.sh IPQUALITY_TIMEOUT_SECONDS=600 \
   IP_EVENTS_ENABLED=1 IP_EVENTS_ENDPOINT=... IP_EVENTS_TOKEN=... \
   IP_MONITOR_ENABLED=1 IP_MONITOR_INTERVAL_SECONDS=60 IPV6_MONITOR_ENABLED=0 SERVER_LABEL=... REPORT_CHANNEL=@... \
   node changeip_http_server.js

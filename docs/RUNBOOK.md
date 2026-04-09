@@ -62,9 +62,10 @@ chmod +x install.sh uninstall.sh
 
 若你启用了 `/ipquality`：
 
-- 安装脚本只会把 `IPQUALITY_*` 写入配置，不会帮你下载或更新 IPQuality 脚本
-- 建议先把脚本固定到 VPS 本地路径（例如 `/root/IPQuality/ip.sh`），再运行安装
-- 即使安装时路径还不存在，你也可以先完成部署；等真正调用 `/ipquality` 时，服务会按当前文件状态返回明确错误
+- 仓库自带固定版本脚本：`vendor/ipquality/ip.sh`
+- 安装脚本默认会把 `IPQUALITY_SCRIPT_PATH` 指向当前仓库内的 `vendor/ipquality/ip.sh`
+- ip-changer 会用 `/bin/bash <IPQUALITY_SCRIPT_PATH> -n` 执行；`-n` 表示跳过 IPQuality 自己的依赖安装器
+- 若你手动填的路径不存在，也可以先完成部署；等真正调用 `/ipquality` 时，服务会按当前文件状态返回明确错误
 
 注意：`./install.sh` 每次执行都会完整覆盖 `/etc/default/changeip-http`，不会保留旧文件中的额外自定义环境变量。
 
@@ -166,7 +167,7 @@ curl -X POST http://127.0.0.1:8787/changeip -H 'Content-Type: application/json' 
 前提：
 
 - `IPQUALITY_ENABLED=1`
-- `IPQUALITY_SCRIPT_PATH` 指向 VPS 本地已存在的固定脚本
+- `IPQUALITY_SCRIPT_PATH` 指向 VPS 本地已存在的固定脚本；推荐使用 `/root/ip-changer/vendor/ipquality/ip.sh`
 
 触发一次检测：
 

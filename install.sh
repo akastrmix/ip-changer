@@ -137,9 +137,10 @@ esac
 IPQUALITY_SCRIPT_PATH=""
 IPQUALITY_STATE_FILE="/var/lib/changeip-http/ipquality_state.json"
 IPQUALITY_TIMEOUT_SECONDS="600"
+DEFAULT_IPQUALITY_SCRIPT_PATH="$SCRIPT_DIR/vendor/ipquality/ip.sh"
 if [ "$IPQUALITY_ENABLED" -eq 1 ]; then
-  read -rp "IPQuality 脚本绝对路径 [默认 /root/IPQuality/ip.sh]: " IPQUALITY_SCRIPT_PATH
-  IPQUALITY_SCRIPT_PATH="${IPQUALITY_SCRIPT_PATH:-/root/IPQuality/ip.sh}"
+  read -rp "IPQuality 脚本绝对路径 [默认 $DEFAULT_IPQUALITY_SCRIPT_PATH]: " IPQUALITY_SCRIPT_PATH
+  IPQUALITY_SCRIPT_PATH="${IPQUALITY_SCRIPT_PATH:-$DEFAULT_IPQUALITY_SCRIPT_PATH}"
 
   if [ ! -f "$IPQUALITY_SCRIPT_PATH" ]; then
     echo "警告：未找到 IPQuality 脚本文件：$IPQUALITY_SCRIPT_PATH"

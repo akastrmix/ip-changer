@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-（暂无）
+- 部署：内置固定版本的上游 IPQuality 脚本到 `vendor/ipquality/ip.sh`，安装脚本启用 `/ipquality` 时默认指向仓库内文件，不再要求维护者先手动创建 `/root/IPQuality/ip.sh`。
 
 ## 0.7.5
 
