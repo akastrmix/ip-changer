@@ -224,8 +224,9 @@ apt install -y nodejs
       - 当前只解析并保存 IPv4 报告 URL；上游脚本的双栈输出会产生两个报告链接，暂不用于本接口
       - 若当前已有运行中的检测，会返回 `200 state=running` 并复用同一个 `run_id`
     - 成功条件：
-      - 脚本退出码为 `0`
       - 输出中能提取到至少一个 `https://...svg` 报告链接（当前取最后一个匹配）
+      - 若脚本已打印报告链接，即使上游脚本最后返回非 0 退出码，也按成功保存报告
+      - 若输出中没有报告链接，再按超时/非 0 退出码/无报告链接记录失败
     - 失败示例：
       - `ipquality script path must be absolute`
       - `ipquality script not found`
@@ -656,6 +657,7 @@ node scripts/changeip_regression.js
 - `IPQUALITY_SCRIPT_PATH` 非常规文件：返回 `500 ipquality script is not a regular file`
 - `/ipquality` 运行中重复触发：返回 `200 state=running` 并复用已有 `run_id`
 - `/ipquality` 成功：会把 `last_success.report_url` 写入 `ipquality_state.json`
+- `/ipquality` 打印了报告链接但退出码非 0：按成功处理并保存报告链接
 - `/ipquality` 成功但输出中无报告链接：会写入 `last_failure.error=ipquality report url not found`
 - 脚本快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=script_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - `exec` 命令快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=exec_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`

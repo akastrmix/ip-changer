@@ -1103,6 +1103,30 @@ async function testIpqualityRunnerHelpers() {
 
   const excerpt = ipqualityRunnerTestHelpers.buildOutputExcerpt(`${'x'.repeat(2000)}\n${noisyOutput}`);
   assert(excerpt.includes('https://Report.Check.Place/ip/ABC123.svg'), 'expected output excerpt to preserve report url');
+
+  const nonZeroWithReport = ipqualityRunnerTestHelpers.interpretIpqualityScriptResult({
+    code: 1,
+    signal: null,
+    timedOut: false,
+    outputText: noisyOutput,
+    timeoutSeconds: 600
+  });
+  assert(
+    nonZeroWithReport.ok && nonZeroWithReport.reportUrl === 'https://Report.Check.Place/ip/ABC123.svg',
+    `expected report url to win over non-zero exit code, got: ${JSON.stringify(nonZeroWithReport)}`
+  );
+
+  const nonZeroWithoutReport = ipqualityRunnerTestHelpers.interpretIpqualityScriptResult({
+    code: 1,
+    signal: null,
+    timedOut: false,
+    outputText: 'no report',
+    timeoutSeconds: 600
+  });
+  assert(
+    !nonZeroWithoutReport.ok && nonZeroWithoutReport.error === 'ipquality script exited with exit code 1',
+    `expected non-zero exit code failure when report url is absent, got: ${JSON.stringify(nonZeroWithoutReport)}`
+  );
 }
 
 async function testCompileRejectsNonIntegerSuffix(tmpRoot) {

@@ -51,6 +51,36 @@ function extractReportUrl(text) {
   return String(matches[matches.length - 1] || '').trim();
 }
 
+function interpretIpqualityScriptResult({ code, signal, timedOut, outputText, timeoutSeconds }) {
+  if (timedOut) {
+    return {
+      ok: false,
+      error: `ipquality timed out after ${timeoutSeconds}s`
+    };
+  }
+
+  const reportUrl = extractReportUrl(outputText);
+  if (reportUrl) {
+    return {
+      ok: true,
+      reportUrl
+    };
+  }
+
+  if (code !== 0) {
+    const detail = code == null ? `signal ${String(signal || 'unknown')}` : `exit code ${code}`;
+    return {
+      ok: false,
+      error: `ipquality script exited with ${detail}`
+    };
+  }
+
+  return {
+    ok: false,
+    error: 'ipquality report url not found'
+  };
+}
+
 function spawnIpqualityProcess(config) {
   return spawn('/bin/bash', [config.ipqualityScriptPath, '-4', '-n'], {
     detached: USE_DETACHED_PROCESS_GROUP,
@@ -139,35 +169,13 @@ async function runIpqualityScript(config, { runId }) {
     });
 
     child.once('close', (code, signal) => {
-      if (timedOut) {
-        finish({
-          ok: false,
-          error: `ipquality timed out after ${config.ipqualityTimeoutSeconds}s`
-        });
-        return;
-      }
-      if (code !== 0) {
-        const detail = code == null ? `signal ${String(signal || 'unknown')}` : `exit code ${code}`;
-        finish({
-          ok: false,
-          error: `ipquality script exited with ${detail}`
-        });
-        return;
-      }
-
-      const reportUrl = extractReportUrl(`${stdoutText}\n${stderrText}`);
-      if (!reportUrl) {
-        finish({
-          ok: false,
-          error: 'ipquality report url not found'
-        });
-        return;
-      }
-
-      finish({
-        ok: true,
-        reportUrl
-      });
+      finish(interpretIpqualityScriptResult({
+        code,
+        signal,
+        timedOut,
+        outputText: `${stdoutText}\n${stderrText}`,
+        timeoutSeconds: config.ipqualityTimeoutSeconds
+      }));
     });
   });
 }
@@ -224,6 +232,7 @@ module.exports = {
   _test: {
     buildOutputExcerpt,
     extractReportUrl,
+    interpretIpqualityScriptResult,
     sanitizeOutputText
   }
 };

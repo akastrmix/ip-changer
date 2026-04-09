@@ -237,8 +237,9 @@ HTTP 防护约束（资源与稳定性）：
   - 立即返回 `200`：
     - `{ ok:true, state:"started", run_id, started_at, server_label }`
 - 成功条件：
-  - 脚本退出码为 `0`
   - 合并 stdout/stderr 后能提取到至少一个 `https://...svg` 链接（当前取最后一个匹配）
+  - 若脚本已打印报告链接，即使上游脚本最后返回非 0 退出码，也按成功保存报告
+  - 若输出中没有报告链接，再按超时/非 0 退出码/无报告链接记录失败
 - 失败原因示例：
   - `ipquality script path must be absolute`
   - `ipquality script not found`
