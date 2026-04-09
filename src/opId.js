@@ -37,6 +37,12 @@ function makeIpv6OpId(serverLabel, date = new Date()) {
   return `${ts}_${label}_ipv6_${randomSuffixHex(6)}`;
 }
 
+function makeIpQualityRunId(serverLabel, date = new Date()) {
+  const ts = formatUtcCompact(date);
+  const label = normalizeLabel(serverLabel);
+  return `${ts}_${label}_ipquality_${randomSuffixHex(6)}`;
+}
+
 function isValidOpId(value) {
   const opId = String(value || '').trim();
   if (!opId) return false;
@@ -47,6 +53,7 @@ function isValidOpId(value) {
 module.exports = {
   isValidOpId,
   makeChangeOpId,
+  makeIpQualityRunId,
   makeIpv4OpId,
   makeIpv6OpId
 };

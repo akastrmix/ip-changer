@@ -9,7 +9,8 @@ const { _test: monitorTestHelpers } = require('../../src/monitor');
 const { _test: naturalTestHelpers } = require('../../src/monitor/natural');
 const { _test: configTestHelpers, loadConfigFromEnv } = require('../../src/config');
 const { isValidIpv4, _test: ipv4TestHelpers } = require('../../src/ip/ipv4');
-const { makeIpv4OpId, makeIpv6OpId } = require('../../src/opId');
+const { makeIpQualityRunId, makeIpv4OpId, makeIpv6OpId } = require('../../src/opId');
+const { _test: ipqualityRunnerTestHelpers } = require('../../src/ipquality/runner');
 const {
   loadChangeSession,
   markChangeSessionTimeoutStuckAlert,
@@ -1059,6 +1060,51 @@ async function testReportChannelConfigValidation() {
   assert(message.includes('REPORT_CHANNEL'), `expected invalid REPORT_CHANNEL to fail fast, got: ${message || '<no error>'}`);
 }
 
+async function testIpqualityConfigValidation() {
+  let missingPathMessage = '';
+  try {
+    loadConfigFromEnv({
+      AUTH_TOKEN: 'token',
+      IPQUALITY_ENABLED: '1'
+    });
+  } catch (err) {
+    missingPathMessage = String(err && err.message ? err.message : err);
+  }
+  assert(
+    missingPathMessage.includes('IPQUALITY_SCRIPT_PATH'),
+    `expected missing IPQUALITY_SCRIPT_PATH to fail fast, got: ${missingPathMessage || '<no error>'}`
+  );
+
+  const cfg = loadConfigFromEnv({
+    AUTH_TOKEN: 'token',
+    IPQUALITY_ENABLED: '1',
+    IPQUALITY_SCRIPT_PATH: '/root/IPQuality/ip.sh',
+    IPQUALITY_TIMEOUT_SECONDS: '900'
+  });
+  assert(cfg.ipqualityEnabled === true, 'expected IPQUALITY_ENABLED=1 to enable ipquality');
+  assert(cfg.ipqualityScriptPath === '/root/IPQuality/ip.sh', `unexpected ipquality script path: ${cfg.ipqualityScriptPath}`);
+  assert(cfg.ipqualityTimeoutSeconds === 900, `unexpected ipquality timeout: ${cfg.ipqualityTimeoutSeconds}`);
+}
+
+async function testIpqualityRunnerHelpers() {
+  const runId = makeIpQualityRunId('HKT');
+  assert(/_ipquality_[0-9a-f]{6}$/.test(runId), `unexpected ipquality run_id format: ${runId}`);
+
+  const noisyOutput = '\u001b[32m报告链接: https://Report.Check.Place/ip/ABC123.svg\u001b[0m\r\n';
+  const reportUrl = ipqualityRunnerTestHelpers.extractReportUrl(noisyOutput);
+  assert(
+    reportUrl === 'https://Report.Check.Place/ip/ABC123.svg',
+    `expected report url extracted from ANSI output, got: ${reportUrl}`
+  );
+  assert(
+    ipqualityRunnerTestHelpers.extractReportUrl('报告链接: http://Report.Check.Place/ip/NOT_ALLOWED.svg') === '',
+    'expected non-HTTPS ipquality report url to be ignored'
+  );
+
+  const excerpt = ipqualityRunnerTestHelpers.buildOutputExcerpt(`${'x'.repeat(2000)}\n${noisyOutput}`);
+  assert(excerpt.includes('https://Report.Check.Place/ip/ABC123.svg'), 'expected output excerpt to preserve report url');
+}
+
 async function testCompileRejectsNonIntegerSuffix(tmpRoot) {
   const flow = {
     base_url: 'https://example.com',
@@ -1202,6 +1248,14 @@ const QUICK_CASES = [
   {
     title: 'REPORT_CHANNEL is validated at config load time',
     run: testReportChannelConfigValidation
+  },
+  {
+    title: 'ipquality config requires script path and respects timeout overrides',
+    run: testIpqualityConfigValidation
+  },
+  {
+    title: 'ipquality helper logic extracts report url from sanitized output',
+    run: testIpqualityRunnerHelpers
   },
   {
     title: 'reboot-enabled config fails fast when shutdown binary is unavailable',

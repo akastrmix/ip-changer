@@ -62,6 +62,25 @@ function recordChangeipRequest(outcome) {
   if (key) incrementCounter(`changeip_requests_${key}_total`, 1);
 }
 
+function recordIpqualityRequest(outcome) {
+  incrementCounter('ipquality_requests_total', 1);
+  const key = String(outcome || '').trim().toLowerCase();
+  if (key) incrementCounter(`ipquality_requests_${key}_total`, 1);
+}
+
+function recordIpqualityRunStarted() {
+  incrementCounter('ipquality_runs_started_total', 1);
+}
+
+function recordIpqualityRunSucceeded() {
+  incrementCounter('ipquality_runs_succeeded_total', 1);
+}
+
+function recordIpqualityRunFailed(error) {
+  incrementCounter('ipquality_runs_failed_total', 1);
+  recordError('ipquality_run', error);
+}
+
 function recordMonitorTick() {
   incrementCounter('monitor_ticks_total', 1);
 }
@@ -109,6 +128,10 @@ function getRuntimeMetricsSnapshot() {
 module.exports = {
   getRuntimeMetricsSnapshot,
   recordChangeipRequest,
+  recordIpqualityRequest,
+  recordIpqualityRunFailed,
+  recordIpqualityRunStarted,
+  recordIpqualityRunSucceeded,
   recordIpEventPostAttempt,
   recordIpEventPostFailure,
   recordIpEventPostSuccess,

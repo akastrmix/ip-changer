@@ -14,6 +14,10 @@
   - `pending.js`：换 IP 会话 runner 对外入口（内部模块见 `monitor/pending/`）。
   - `pending/`：pending runner 内部模块（validate/provider/reboot/terminal/invalid/runner）。
   - `helpers.js`：调度时间与监测日志辅助函数。
+- `ipquality/`
+  - `trigger.js`：`/ipquality` 与 `/ipquality/status` 入口编排、配置校验、并发收口。
+  - `runner.js`：本机执行 IPQuality 脚本、超时控制、报告 URL 提取、成功/失败落盘。
+  - `state.js`：`ipquality_state.json` 的读写、schema 归一化与 stale running 修复。
 - `network/`
   - `keepAliveAgents.js`：HTTP keep-alive agent 配置工厂（`http.js` 与 `http_flow` 共享，避免参数漂移）。
   - `http.js`：底层 HTTP 请求封装。

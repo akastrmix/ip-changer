@@ -11,6 +11,7 @@
 - Node.js 脚本：`changeip_http_server.js`
   - 监听 HTTP 端口（默认 `0.0.0.0:8787`）
   - 可选：提供 `/changeip` 触发换 IP + 可选重启（`REBOOT_DELAY_MINUTES=-1` 时不重启）
+  - 可选：提供 `/ipquality` 触发本机 IPQuality 检测，并通过 `/ipquality/status` 暴露最近一次运行结果
 - 可选：公网 IPv4/IPv6 监测并上报到 CarpoolNotifier（仅在变化时上报）
 
 破坏性更新说明：
@@ -55,6 +56,14 @@ HTTP 服务：
 - `CHANGEIP_HTTP_FLOW_FILE`：provider=`http_flow` 时使用的 flow JSON 绝对路径
 - `REBOOT_DELAY_MINUTES`：provider 触发后，几分钟后重启（设置为 `-1` 表示不重启；否则仅允许 `1..15`，禁止 `0`）
 - 当 `CHANGEIP_ENABLED=1` 且 `REBOOT_DELAY_MINUTES!=-1` 时，配置加载阶段必须能找到 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；否则直接启动失败
+
+IPQuality（可选）：
+
+- `IPQUALITY_ENABLED`：`1/0`（默认建议 `0`）
+- `IPQUALITY_SCRIPT_PATH`：当 `IPQUALITY_ENABLED=1` 时使用的 IPQuality 脚本绝对路径
+- `IPQUALITY_STATE_FILE`：IPQuality 状态文件（默认 `/var/lib/changeip-http/ipquality_state.json`）
+- `IPQUALITY_TIMEOUT_SECONDS`：单次 IPQuality 运行超时（默认 `600`，范围 `30..3600`）
+- `IPQUALITY_SCRIPT_PATH` 只要求在配置加载阶段非空；文件是否存在/可读由 `/ipquality` 触发前实时校验，因此安装阶段允许“先写配置、后补脚本”
 
 `http_flow` flow 文件要点（v1）：
 
@@ -119,7 +128,7 @@ HTTP 服务：
 
 HTTP 防护约束（资源与稳定性）：
 
-- 入站请求体大小限制：`/info` 与 `/changeip` 默认最多读取 `1024` bytes，超限返回 `413`
+- 入站请求体大小限制：`/info`、`/changeip`、`/ipquality`、`/ipquality/status` 默认最多读取 `1024` bytes，超限返回 `413`
 - 服务端显式设置超时：`request=300s`、`headers=60s`、`keep-alive=5s`
 - 出站 HTTP 响应体读取有大小上限：
   - 通用请求（公网 IP 获取、ip-events 上报）：约 `1 MiB`
@@ -206,6 +215,54 @@ HTTP 防护约束（资源与稳定性）：
   - 语义说明：
     - `200 + ok=true` 表示“触发已接受”，不表示最终换 IP 成功。
     - 最终结果以后续会话终态事件 `change_succeeded` / `change_no_change` / `change_failed` 为准。
+
+### 4.4 `POST /ipquality`（可选）
+
+仅当 `IPQUALITY_ENABLED=1` 时启用，否则：
+
+- `403` `{ ok:false, error:"ipquality disabled" }`
+
+启用时：
+
+- 鉴权：Body 必须是 JSON 对象，且包含 `{ "token": "<AUTH_TOKEN>" }`，否则 `403`
+  - 若 Body 不是 JSON 对象（例如 `[]`、`123`、`"abc"`），返回 `400` `{ ok:false, error:"json body must be an object" }`
+- 触发前校验：
+  - `IPQUALITY_SCRIPT_PATH` 必须为绝对路径
+  - 脚本必须存在、是常规文件且当前可读
+- 若当前已有运行中的 run（`ipquality_state.json` 的 `current_run` 已存在），返回 `200`：
+  - `{ ok:true, state:"running", run_id, started_at, server_label }`
+- 若当前没有运行中的 run：
+  - 会先落盘 `current_run`
+  - 再异步执行 `/bin/bash <IPQUALITY_SCRIPT_PATH> -n`
+  - 立即返回 `200`：
+    - `{ ok:true, state:"started", run_id, started_at, server_label }`
+- 成功条件：
+  - 脚本退出码为 `0`
+  - 合并 stdout/stderr 后能提取到至少一个 `https://...svg` 链接（当前取最后一个匹配）
+- 失败原因示例：
+  - `ipquality script path must be absolute`
+  - `ipquality script not found`
+  - `ipquality script is not a regular file`
+  - `ipquality script not readable`
+  - `ipquality timed out after 600s`
+  - `ipquality report url not found`
+
+### 4.5 `POST /ipquality/status`
+
+- 鉴权：Body 必须是 JSON 对象，且包含 `{ "token": "<AUTH_TOKEN>" }`
+- 即使 `IPQUALITY_ENABLED=0` 也返回 `200`
+- 返回字段：
+  - `ipquality_enabled`
+  - `server_label`
+  - `current_run`：当前运行中的 run；无则为 `null`
+  - `last_success`：最近一次成功结果；无则为 `null`
+    - `run_id`
+    - `checked_at`
+    - `report_url`
+  - `last_failure`：最近一次失败结果；无则为 `null`
+    - `run_id`
+    - `failed_at`
+    - `error`
 
 ## 5. 自然 IP 监测与上报规则
 
@@ -335,3 +392,36 @@ JSON 对象（用于跨重启恢复；字段按当前版本严格校验，不兼
 并发约束：
 
 - 同一时刻只允许一个会话；存在 `op_id` 时新的 `/changeip` 必须返回 `409`。
+
+### 5.6 IPQuality 状态文件格式（`IPQUALITY_STATE_FILE`）
+
+JSON 对象：
+
+- 当 `IPQUALITY_ENABLED=1` 且文件存在时，必须是合法 JSON 对象；否则 `/ipquality` 或 `/ipquality/status` 会报 `state_error`
+- 服务启动时若发现 `current_run.status="running"`，会把它修复成：
+  - `current_run=null`
+  - `last_failure.error=service_restarted_during_ipquality_run`
+  - 目的是避免服务异常重启后永久卡在 running
+
+字段：
+
+- `current_run`（可选）：
+  - `run_id`
+  - `status`：当前固定为 `running`
+  - `started_at`
+- `last_success`（可选）：
+  - `run_id`
+  - `checked_at`
+  - `report_url`
+  - `stdout_excerpt`
+- `last_failure`（可选）：
+  - `run_id`
+  - `failed_at`
+  - `error`
+  - `stdout_excerpt`
+- `updated_at`
+
+并发约束：
+
+- 同一时刻只允许一个活动 `current_run`
+- 若 `current_run` 已存在，新的 `/ipquality` 触发不会重复启动脚本，而是直接返回当前 `run_id`

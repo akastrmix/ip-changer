@@ -35,6 +35,10 @@ function readJsonObjectFile(filePath, label) {
   }
 }
 
+function loadOptionalJsonObjectFile(filePath, label) {
+  return readJsonObjectFile(filePath, label);
+}
+
 function isStateFileError(err) {
   return err instanceof StateFileError;
 }
@@ -85,6 +89,10 @@ function saveJsonFileAtomic(filePath, obj) {
   }
 }
 
+function saveJsonObjectFileAtomic(filePath, obj) {
+  return saveJsonFileAtomic(filePath, obj);
+}
+
 function deleteFile(filePath) {
   try {
     fs.unlinkSync(filePath);
@@ -97,6 +105,10 @@ function deleteFile(filePath) {
     console.error('[changeip-http] failed to delete state file:', error);
     return { ok: false, error };
   }
+}
+
+function deleteStateFile(filePath) {
+  return deleteFile(filePath);
 }
 
 function loadIpState(config) {
@@ -123,9 +135,12 @@ function clearPendingChange(config) {
 
 module.exports = {
   StateFileError,
+  deleteStateFile,
   isStateFileError,
   loadIpState,
+  loadOptionalJsonObjectFile,
   saveIpState,
+  saveJsonObjectFileAtomic,
   loadPendingChange,
   savePendingChange,
   clearPendingChange

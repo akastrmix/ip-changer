@@ -122,6 +122,19 @@ function loadConfigFromEnv(env = process.env) {
   const ipEventsToken = String(env.IP_EVENTS_TOKEN || '').trim();
   const ipEventsActive = ipEventsEnabled && !!ipEventsEndpoint && !!ipEventsToken;
 
+  const ipqualityEnabled = parseBool(env.IPQUALITY_ENABLED ?? '0');
+  const ipqualityScriptPath = String(env.IPQUALITY_SCRIPT_PATH || '').trim();
+  if (ipqualityEnabled && !ipqualityScriptPath) {
+    throw new Error('IPQUALITY_SCRIPT_PATH is required when IPQUALITY_ENABLED=1');
+  }
+  const ipqualityStateFile = String(env.IPQUALITY_STATE_FILE || '/var/lib/changeip-http/ipquality_state.json').trim();
+  const ipqualityTimeoutSeconds = parsePositiveInt(
+    'IPQUALITY_TIMEOUT_SECONDS',
+    env.IPQUALITY_TIMEOUT_SECONDS,
+    600,
+    { min: 30, max: 3600 }
+  );
+
   const changeMonitorStartDelaySeconds = parsePositiveInt(
     'CHANGE_MONITOR_START_DELAY_SECONDS',
     env.CHANGE_MONITOR_START_DELAY_SECONDS,
@@ -162,6 +175,10 @@ function loadConfigFromEnv(env = process.env) {
     ipEventsEndpoint,
     ipEventsToken,
     ipEventsActive,
+    ipqualityEnabled,
+    ipqualityScriptPath,
+    ipqualityStateFile,
+    ipqualityTimeoutSeconds,
     changeMonitorStartDelaySeconds,
     changeMonitorIntervalSeconds,
     changeMonitorTimeoutSeconds

@@ -3,12 +3,14 @@
 一个极简的常驻服务，用于在 Debian VPS 上：
 
 - （可选）通过 HTTP 触发 provider（脚本/命令/http_flow），并按配置可选自动重启，实现一键更换公网 IP
+- （可选）通过 HTTP 异步触发本机 IPQuality 检测，并保存最近一次成功/失败结果
 - 监测公网 **IPv4/IPv6** 是否发生变化，并上报到 CarpoolNotifier（Cloudflare Worker）
 
 本项目只负责：
 
 - 在 VPS 上监听一个 HTTP 接口（默认 `0.0.0.0:8787`）。
 - （可选）接收到带密钥的请求后按 provider 执行换 IP 触发动作，并按 `REBOOT_DELAY_MINUTES` 可选安排重启（`-1` 表示不重启）。
+- （可选）接收到带密钥的请求后异步执行本机固定路径的 IPQuality 脚本，并保存最近一次运行状态。
 - 定期检测公网 IPv4/IPv6 变化并上报到 CarpoolNotifier。
 
 ---
@@ -41,6 +43,7 @@
 - `src/`
   - `change/trigger.js`：`/changeip` 入口编排（会话创建、provider 触发、可选重启）。
   - `change/session.js`：`pending_change` 状态机与 `change_*` 事件构造/上报。
+  - `ipquality/`：`/ipquality` 触发、运行态与最近一次结果落盘。
   - `monitor.js`：会话终态判定（`change_succeeded/no_change/failed`，仅基于 IPv4）与自然 IPv4/IPv6 监测。
   - `contracts/ipEvents.js`：事件契约（枚举、版本、字段校验）。
   - `providers/`：`script` / `exec` / `http_flow` provider 及公共错误模型。
@@ -50,6 +53,8 @@
 - `script` provider：准备可由 `/bin/bash <CHANGEIP_SCRIPT>` 执行的脚本（例如 `/root/changeip.sh`）
 - `exec` provider：准备可执行命令（`CHANGEIP_EXEC_COMMAND`）
 - `http_flow` provider：准备 flow JSON 文件（`CHANGEIP_HTTP_FLOW_FILE`）
+
+如果启用 `/ipquality`，你需要先把 IPQuality 脚本固定到 VPS 本地某个绝对路径（例如 `/root/IPQuality/ip.sh`）。本项目不会自动下载或自动更新该脚本。
 
 `script` / `exec` provider 明确以 Debian/Ubuntu 服务器环境为目标，依赖 `/bin/bash`；不再为 Windows 开发机做运行时兼容分支。
 
@@ -203,6 +208,28 @@ apt install -y nodejs
       - 上游 HTTP 响应读取存在大小上限：通用请求（IPv4/IPv6 获取、ip-events 上报）默认上限约 `1 MiB`，`http_flow` 请求默认上限约 `4 MiB`；超限会中断并记为失败。
       - 上游若在响应体未完整前提前断开，会立即按失败处理（不等待超时）。
       - 出站 HTTP 默认启用连接复用（keep-alive agent），减少高频请求下的握手与 CPU 开销。
+  - `POST /ipquality`
+    - 仅当 `IPQUALITY_ENABLED=1` 时可用；否则返回 `403`。
+    - 请求体示例：
+      ```json
+      { "token": "YOUR_SHARED_SECRET" }
+      ```
+    - 触发语义：
+      - 若当前无运行中的检测，会立即落盘 `current_run` 并返回 `200`，后台异步执行 `/bin/bash <IPQUALITY_SCRIPT_PATH> -n`
+      - 若当前已有运行中的检测，会返回 `200 state=running` 并复用同一个 `run_id`
+    - 成功条件：
+      - 脚本退出码为 `0`
+      - 输出中能提取到至少一个 `https://...svg` 报告链接（当前取最后一个匹配）
+    - 失败示例：
+      - `ipquality script path must be absolute`
+      - `ipquality script not found`
+      - `ipquality script is not a regular file`
+      - `ipquality script not readable`
+      - `ipquality timed out after 600s`
+      - `ipquality report url not found`
+  - `POST /ipquality/status`
+    - 返回当前 `ipquality` 能力状态、运行中的 `current_run`，以及最近一次 `last_success` / `last_failure`
+    - 即使 `IPQUALITY_ENABLED=0` 也会返回 `200`，并明确给出 `ipquality_enabled=false`
 
 所有行为均由以下环境变量控制（通过 `/etc/default/changeip-http` 配置）：
 
@@ -215,6 +242,10 @@ apt install -y nodejs
 - `CHANGEIP_HTTP_FLOW_FILE`：当 provider=`http_flow` 时使用的 flow JSON 绝对路径
 - `REBOOT_DELAY_MINUTES`：触发 provider 后，几分钟后重启（设置为 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）。
 - 当 `CHANGEIP_ENABLED=1` 且 `REBOOT_DELAY_MINUTES!= -1` 时，服务会在启动时要求系统存在 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；缺失则直接拒绝启动。
+- `IPQUALITY_ENABLED`：是否启用 `/ipquality` 接口（`1` 启用，`0` 关闭）
+- `IPQUALITY_SCRIPT_PATH`：当 `IPQUALITY_ENABLED=1` 时使用的 IPQuality 脚本绝对路径
+- `IPQUALITY_STATE_FILE`：IPQuality 运行态与最近一次结果状态文件（默认 `/var/lib/changeip-http/ipquality_state.json`）
+- `IPQUALITY_TIMEOUT_SECONDS`：单次 IPQuality 运行超时（默认 `600` 秒）
 - 数值型配置只在“未设置”时使用默认值；若填了非法值或超出允许范围，服务会在启动时直接拒绝。
 
 ### 3.1 `http_flow` 配置文件（`CHANGEIP_HTTP_FLOW_FILE`）
@@ -356,6 +387,9 @@ chmod +x install.sh uninstall.sh
      - provider=`http_flow`：输入 `CHANGEIP_HTTP_FLOW_FILE`
      - 重启延迟分钟数（默认 `1`；输入 `-1` 表示不执行重启；否则仅允许 `1..15`，禁止 `0`）
      - 事件流上报会自动启用（`IP_EVENTS_ENABLED=1`）
+   - 是否启用 `/ipquality`（默认关闭）
+     - 若启用：输入 `IPQUALITY_SCRIPT_PATH`
+     - 安装脚本不会帮你下载 IPQuality；若路径不存在，只会给出警告，等真正调用 `/ipquality` 时再按当前文件状态返回错误
    - 入站鉴权密钥 `AUTH_TOKEN`（留空则自动生成）
    - 服务器标识 `SERVER_LABEL`（用于多服务器区分）
       - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空=禁用频道播报；非空时必须是合法频道用户名或负数 chat_id）
@@ -416,6 +450,20 @@ curl -X POST "http://127.0.0.1:8787/changeip" \
 ```
 
 看到 `ok: true` 代表本次触发已被接受；最终是否换 IP 成功需以后续 `change_*` 事件为准。若返回里 `reboot_schedule_requested=true` 说明计划安排重启（实际是否成功安排以日志与终态事件为准），`reboot_delay_minutes` 为计划的延迟分钟（注意这会触发实际的换 IP 逻辑，请谨慎测试）。
+
+如果你启用了 `/ipquality`，再测试触发与状态查询：
+
+```bash
+curl -X POST "http://127.0.0.1:8787/ipquality" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"<YOUR_TOKEN>"}'
+
+curl -X POST "http://127.0.0.1:8787/ipquality/status" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"<YOUR_TOKEN>"}'
+```
+
+`/ipquality` 返回 `state=started` 表示已接受并开始后台执行；`state=running` 表示当前已有检测在跑。最近一次成功的 `report_url` 与失败原因可从 `/ipquality/status` 查看。
 
 ---
 
@@ -520,6 +568,10 @@ systemctl restart changeip-http
   - `CHANGEIP_EXEC_COMMAND`
   - `CHANGEIP_HTTP_FLOW_FILE`
   - `REBOOT_DELAY_MINUTES`
+  - `IPQUALITY_ENABLED`
+  - `IPQUALITY_SCRIPT_PATH`
+  - `IPQUALITY_STATE_FILE`
+  - `IPQUALITY_TIMEOUT_SECONDS`
   - `IP_MONITOR_ENABLED`
   - `IP_MONITOR_INTERVAL_SECONDS`
   - `IPV6_MONITOR_ENABLED`
@@ -566,6 +618,11 @@ node scripts/changeip_regression.js
 - 并发请求 `/changeip`（`script` 与 `exec` provider）：只允许 1 个成功，其余返回 `409`
 - `CHANGEIP_SCRIPT` 相对路径：返回 `500 changeip script path must be absolute`
 - `CHANGEIP_SCRIPT` 非常规文件：返回 `500 changeip script is not a regular file`
+- `IPQUALITY_SCRIPT_PATH` 相对路径：返回 `500 ipquality script path must be absolute`
+- `IPQUALITY_SCRIPT_PATH` 非常规文件：返回 `500 ipquality script is not a regular file`
+- `/ipquality` 运行中重复触发：返回 `200 state=running` 并复用已有 `run_id`
+- `/ipquality` 成功：会把 `last_success.report_url` 写入 `ipquality_state.json`
+- `/ipquality` 成功但输出中无报告链接：会写入 `last_failure.error=ipquality report url not found`
 - 脚本快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=script_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - `exec` 命令快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=exec_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - 脚本快速异常退出 + 首次 `change_failed` 上报被拒：会保留 `pending_change.json` 并由监测循环重试同一终态，成功后再清理
@@ -594,6 +651,7 @@ node scripts/changeip_regression.js
   A: 可以。在仓库目录直接运行：
   ```bash
   AUTH_TOKEN=... PORT=8787 CHANGEIP_ENABLED=1 CHANGEIP_PROVIDER=script CHANGEIP_SCRIPT=/root/changeip.sh REBOOT_DELAY_MINUTES=1 \
+  IPQUALITY_ENABLED=1 IPQUALITY_SCRIPT_PATH=/root/IPQuality/ip.sh IPQUALITY_TIMEOUT_SECONDS=600 \
   IP_EVENTS_ENABLED=1 IP_EVENTS_ENDPOINT=... IP_EVENTS_TOKEN=... \
   IP_MONITOR_ENABLED=1 IP_MONITOR_INTERVAL_SECONDS=60 IPV6_MONITOR_ENABLED=0 SERVER_LABEL=... REPORT_CHANNEL=@... \
   node changeip_http_server.js

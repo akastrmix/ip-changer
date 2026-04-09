@@ -12,14 +12,14 @@
   - 安装/卸载只可影响：
     - `/etc/systemd/system/changeip-http.service`
     - `/etc/default/changeip-http`
-    - `/var/lib/changeip-http/`（`ip_state.json` / `pending_change.json`）
+    - `/var/lib/changeip-http/`（`ip_state.json` / `pending_change.json` / `ipquality_state.json`）
   - 不可改动系统其它模块（系统包、sysctl、全局 cron 等）。
 - 语义边界：
   - IPv6 仅用于自然变化记录（`ipv6_changed`），`/changeip` 会话收敛仍只看 IPv4。
   - `/changeip` 的 `ok=true` 仅表示“触发已接受且会话已落盘，provider 启动已异步调度”，最终结果以 `change_*` 事件为准。
 - 契约稳定：
-  - `GET /`、`POST /info`、`POST /changeip` 与 ip-events 字段语义应尽量保持稳定。
-  - 必要变更时必须同步更新 `docs/SPEC.md`、`docs/INTEGRATION.md` 与 CarpoolNotifier 对接端。
+  - `GET /`、`POST /info`、`POST /changeip`、`POST /ipquality`、`POST /ipquality/status` 与 ip-events 字段语义应尽量保持稳定。
+  - 必要变更时必须同步更新 `docs/SPEC.md`、`docs/INTEGRATION.md`；若命中跨仓库契约，再同步改 CarpoolNotifier 对接端。
 - 跨仓库联动（重要）：
   - 当你改动以下任一项，必须同时 review/修改 **CarpoolNotifier**（代码 + 文档 + 回归），否则大概率“单边改动导致线上卡死/不播报/误告警”：
     - `/changeip` 或 `/info` 的返回字段/语义/错误码/鉴权（含 `ok`/`op_id`/`provider_error_code`/`ip_events_contract_version` 等）
@@ -53,6 +53,7 @@
 - 功能模块尽量小而独立，避免单文件职责过重。
 - 多服务器场景下继续使用 `SERVER_LABEL` + `REPORT_CHANNEL` 区分实例。
 - 避免采用降级处理、兜底方案、临时补丁、启发式方法、局部稳定手段等叠补丁和增加代码复杂度的方案，也不要写过度防御性代码和过度考虑兼容性，尽可能 fail fast / 重构为最优解。
+- 保持项目风格统一，设计新功能的时候应当遵从项目其他部分类似的仓库文件分布/命名模式等风格。
 
 ## 快速恢复（新对话 5 分钟）
 
@@ -71,6 +72,7 @@
 - `src/ip/`：IPv4/IPv6 获取与校验。
 - `src/runtime/`：运行时指标。
 - `src/providers/`：`script` / `exec` / `http_flow` provider。
+- `src/ipquality/`：`/ipquality` 触发、状态文件与后台执行。
 - `src/` 根目录仅保留稳定公共入口模块（如 `monitor.js`、`config.js`、`state.js`、`opId.js`）。
 
 详见：`docs/ARCHITECTURE.md`

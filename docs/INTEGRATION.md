@@ -87,6 +87,25 @@ CarpoolNotifier 用它来获取：
 - JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
   - 若请求体不是 JSON 对象（例如 `[]`、`123`），服务会直接返回 `400`
 
+### 2.3 `/ipquality` 与 `/ipquality/status`
+
+CarpoolNotifier 的 `/ipquality` 命令通过同一套 `CHANGEIP_ENDPOINTS_JSON` + `CHANGEIP_TOKENS_JSON` 调用 ip-changer。
+
+- `POST /ipquality`
+  - 请求：JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
+  - 若本机没有运行中的检测，会落盘 `current_run`、后台执行 `IPQUALITY_SCRIPT_PATH -n`、立即返回 `state="started"`
+  - 若本机已有运行中的检测，直接返回同一个 `run_id` 与 `state="running"`，不会并发启动第二个脚本
+- `POST /ipquality/status`
+  - 请求：JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
+  - 返回 `ipquality_enabled`、`server_label`、`current_run`、`last_success`、`last_failure`
+  - `last_success.report_url` 是 Worker 最终展示给用户的报告 URL
+
+边界：
+
+- 每日一次、等待用户列表、完成后私聊通知、管理员 `/ipquality refresh` 都由 CarpoolNotifier 管理。
+- VPS 只负责“启动一次脚本、持久化当前/最近结果、暴露 status”。
+- 详细的 bot 侧缓存 / 轮询行为见 CarpoolNotifier 的 `docs/changeip/IP_CHANGER.md`。
+
 ## 3. 方向 B：ip-changer → CarpoolNotifier（事件流上报）
 
 你已确认：不做向下兼容，因此本项目以 **`/internal/ip-events`** 作为唯一上报入口（旧的 `/internal/ip-changed` / `IP_REPORT_*` 不再使用）。

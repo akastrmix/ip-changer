@@ -415,6 +415,10 @@ function buildEnv({
   scriptPath = '',
   execCommand = '',
   httpFlowFile = '',
+  ipqualityEnabled = false,
+  ipqualityScriptPath = '',
+  ipqualityStateFile = '',
+  ipqualityTimeoutSeconds = '600',
   stateFile,
   pendingFile
 }) {
@@ -441,6 +445,12 @@ function buildEnv({
   if (provider === 'script') env.CHANGEIP_SCRIPT = scriptPath;
   if (provider === 'exec') env.CHANGEIP_EXEC_COMMAND = execCommand;
   if (provider === 'http_flow') env.CHANGEIP_HTTP_FLOW_FILE = httpFlowFile;
+  if (ipqualityEnabled) {
+    env.IPQUALITY_ENABLED = '1';
+    env.IPQUALITY_SCRIPT_PATH = ipqualityScriptPath;
+    env.IPQUALITY_STATE_FILE = ipqualityStateFile;
+    env.IPQUALITY_TIMEOUT_SECONDS = String(ipqualityTimeoutSeconds || '600');
+  }
   return env;
 }
 
@@ -450,7 +460,8 @@ function makeCaseFiles(tmpRoot, name) {
   return {
     dir,
     stateFile: path.join(dir, 'ip_state.json'),
-    pendingFile: path.join(dir, 'pending_change.json')
+    pendingFile: path.join(dir, 'pending_change.json'),
+    ipqualityStateFile: path.join(dir, 'ipquality_state.json')
   };
 }
 
@@ -469,6 +480,25 @@ async function postInfo(port) {
     port,
     method: 'POST',
     pathname: '/info',
+    body: { token: AUTH_TOKEN }
+  });
+}
+
+async function postIpQuality(port, extraBody = null) {
+  const extra = extraBody && typeof extraBody === 'object' ? extraBody : {};
+  return httpRequest({
+    port,
+    method: 'POST',
+    pathname: '/ipquality',
+    body: { token: AUTH_TOKEN, ...extra }
+  });
+}
+
+async function postIpQualityStatus(port) {
+  return httpRequest({
+    port,
+    method: 'POST',
+    pathname: '/ipquality/status',
     body: { token: AUTH_TOKEN }
   });
 }
@@ -505,6 +535,8 @@ module.exports = {
   makeCaseFiles,
   postChangeIp,
   postInfo,
+  postIpQuality,
+  postIpQualityStatus,
   postRawJson,
   runWithServer,
   sleep,

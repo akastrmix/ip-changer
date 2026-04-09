@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+- 新增：可选 `/ipquality` 能力，使用固定本地脚本路径异步执行 IPQuality，并新增 `/ipquality/status` 查看当前运行态与最近一次成功/失败结果。
+- 新增：`src/ipquality/` 子系统与 `ipquality_state.json` 状态文件，服务启动时会把“上次进程异常中断的 running run”修复为失败态，避免永久卡在 running。
+- 新增：安装脚本支持配置 `IPQUALITY_ENABLED` / `IPQUALITY_SCRIPT_PATH`；缺文件只给出安装期警告，真正调用 `/ipquality` 时再按当前文件状态返回错误。
+- 测试：回归脚本补充 `ipquality` 配置校验、状态修复、运行中复用、成功落盘、失败落盘等用例。
 - 文档：修正 `install.sh` 安装完成提示、README、AGENTS 与对接文档中的 CarpoolNotifier 配置示例；`CHANGEIP_ENDPOINTS_JSON` 现在只填 ip-changer 根地址，bot 侧 `CHANGEIP_SERVERS` 对可调用 ip-changer 统一写 `LABEL:script`，不再把本机 `exec/http_flow` provider 原样写入 bot 配置。
 
 ## 0.7.0

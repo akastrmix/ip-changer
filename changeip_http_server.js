@@ -5,6 +5,8 @@
 // - GET  /
 // - POST /info     { token }
 // - POST /changeip { token }   (optional)
+// - POST /ipquality { token }  (optional)
+// - POST /ipquality/status { token }  (optional)
 
 const http = require('http');
 
@@ -15,6 +17,7 @@ const {
   loadPendingChange
 } = require('./src/state');
 const { triggerChangeIp } = require('./src/change/trigger');
+const { getIpqualityStatus, loadIpqualityState, triggerIpquality } = require('./src/ipquality');
 const { startMonitor } = require('./src/monitor');
 const { getRuntimeMetricsSnapshot } = require('./src/runtime/metrics');
 const {
@@ -31,6 +34,9 @@ try {
   config = loadConfigFromEnv(process.env);
   loadIpState(config);
   loadPendingChange(config);
+  if (config.ipqualityEnabled) {
+    loadIpqualityState(config, { repairStaleRunning: true });
+  }
 } catch (err) {
   console.error('[changeip-http] startup error:', String(err));
   process.exit(1);
@@ -103,8 +109,12 @@ function readJsonBody(req, res, { maxBytes = 1024 } = {}) {
   });
 }
 
-function handleInfo(req, res) {
-  readJsonBody(req, res).then((parsed) => {
+function sendResult(res, result) {
+  jsonResponse(res, result.status || 500, result.body || { ok: false, error: 'unknown_error' });
+}
+
+function handleAuthenticatedPost(req, res, routeName, handler) {
+  readJsonBody(req, res).then(async (parsed) => {
     if (!parsed) return;
     const token = typeof parsed.token === 'string' ? parsed.token.trim() : '';
     if (!token || !safeTokenEquals(token, config.authToken)) {
@@ -112,16 +122,26 @@ function handleInfo(req, res) {
       return;
     }
 
-    let state;
     try {
-      state = loadIpState(config);
+      sendResult(res, await handler(parsed));
     } catch (err) {
-      console.error('[changeip-http] /info state error:', String(err));
-      if (isStateFileError(err)) scheduleFatalExit('state file error during /info', err);
-      jsonResponse(res, 500, { ok: false, error: 'state_error' });
-      return;
+      console.error(`[changeip-http] ${routeName} error:`, String(err));
+      if (isStateFileError(err)) {
+        scheduleFatalExit(`state file error during ${routeName}`, err);
+        jsonResponse(res, 500, { ok: false, error: 'state_error' });
+        return;
+      }
+      jsonResponse(res, 500, { ok: false, error: 'internal_error' });
     }
-    jsonResponse(res, 200, {
+  });
+}
+
+function handleInfo(req, res) {
+  handleAuthenticatedPost(req, res, '/info', () => {
+    const state = loadIpState(config);
+    return {
+      status: 200,
+      body: {
       ok: true,
       server_label: config.serverLabel,
       channel: config.reportChannel,
@@ -135,33 +155,27 @@ function handleInfo(req, res) {
       notified_ipv4: state.notified_ipv4 || null,
       notified_ipv6: state.notified_ipv6 || null,
       runtime_metrics: getRuntimeMetricsSnapshot()
-    });
+      }
+    };
   });
 }
 
 function handleChangeIp(req, res) {
-  readJsonBody(req, res).then(async (parsed) => {
-    if (!parsed) return;
-    const token = typeof parsed.token === 'string' ? parsed.token.trim() : '';
-    if (!token || !safeTokenEquals(token, config.authToken)) {
-      jsonResponse(res, 403, { ok: false, error: 'forbidden' });
-      return;
-    }
+  handleAuthenticatedPost(req, res, '/changeip', (parsed) => {
+    const force = parsed && parsed.force === true;
+    return triggerChangeIp(config, { force });
+  });
+}
 
-    let result;
-    try {
-      const force = parsed && parsed.force === true;
-      result = await triggerChangeIp(config, { force });
-    } catch (err) {
-      console.error('[changeip-http] /changeip error:', String(err));
-      if (isStateFileError(err)) {
-        scheduleFatalExit('state file error during /changeip', err);
-        result = { status: 500, body: { ok: false, error: 'state_error' } };
-      } else {
-        result = { status: 500, body: { ok: false, error: 'internal_error' } };
-      }
-    }
-    jsonResponse(res, result.status || 500, result.body || { ok: false, error: 'unknown_error' });
+function handleIpquality(req, res) {
+  handleAuthenticatedPost(req, res, '/ipquality', () => {
+    return triggerIpquality(config);
+  });
+}
+
+function handleIpqualityStatus(req, res) {
+  handleAuthenticatedPost(req, res, '/ipquality/status', () => {
+    return getIpqualityStatus(config);
   });
 }
 
@@ -178,6 +192,14 @@ function handleRequest(req, res) {
 
   if (method === 'POST' && url === '/changeip') {
     return handleChangeIp(req, res);
+  }
+
+  if (method === 'POST' && url === '/ipquality') {
+    return handleIpquality(req, res);
+  }
+
+  if (method === 'POST' && url === '/ipquality/status') {
+    return handleIpqualityStatus(req, res);
   }
 
   jsonResponse(res, 404, { ok: false, error: 'not found' });
@@ -207,6 +229,9 @@ server.listen(config.port, '0.0.0.0', () => {
     if (config.changeipProvider === 'http_flow') {
       console.log(`[changeip-http] changeip http_flow file: ${config.changeipHttpFlowFile}`);
     }
+  }
+  if (config.ipqualityEnabled) {
+    console.log(`[changeip-http] /ipquality enabled: script=${config.ipqualityScriptPath}`);
   }
 });
 server.on('error', (err) => {

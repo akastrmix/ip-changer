@@ -11,6 +11,8 @@ const {
   makeCaseFiles,
   postChangeIp,
   postInfo,
+  postIpQuality,
+  postIpQualityStatus,
   postRawJson,
   runWithServer,
   sleep,
@@ -1049,11 +1051,16 @@ async function testStartupFailsOnMalformedPendingFile(tmpRoot, sink) {
 async function testRejectNonObjectJsonBodies(tmpRoot, sink) {
   const files = makeCaseFiles(tmpRoot, 'reject_non_object_json_bodies');
   const port = await getFreePort();
+  const scriptPath = path.join(files.dir, 'ipquality_success.sh');
+  writeShellScript(scriptPath, 'echo "https://Report.Check.Place/ip/REGRESSION123.svg"\nexit 0');
   const env = buildEnv({
     port,
     provider: 'exec',
     endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
     execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
     stateFile: files.stateFile,
     pendingFile: files.pendingFile
   });
@@ -1072,6 +1079,373 @@ async function testRejectNonObjectJsonBodies(tmpRoot, sink) {
       changeResp.json?.error === 'json body must be an object',
       `unexpected /changeip error body: ${changeResp.text}`
     );
+
+    const ipqualityResp = await postRawJson(port, '/ipquality', '"bad"');
+    assert(ipqualityResp.status === 400, `expected /ipquality with string JSON to return 400, got ${ipqualityResp.status}`);
+    assert(
+      ipqualityResp.json?.error === 'json body must be an object',
+      `unexpected /ipquality error body: ${ipqualityResp.text}`
+    );
+
+    const ipqualityStatusResp = await postRawJson(port, '/ipquality/status', '[]');
+    assert(
+      ipqualityStatusResp.status === 400,
+      `expected /ipquality/status with array JSON to return 400, got ${ipqualityStatusResp.status}`
+    );
+    assert(
+      ipqualityStatusResp.json?.error === 'json body must be an object',
+      `unexpected /ipquality/status error body: ${ipqualityStatusResp.text}`
+    );
+  });
+}
+
+async function testIpqualityStatusReportsDisabled(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'ipquality_status_disabled');
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const statusResp = await postIpQualityStatus(port);
+    assert(statusResp.status === 200, `expected /ipquality/status=200, got ${statusResp.status}`);
+    assert(statusResp.json?.ipquality_enabled === false, `expected ipquality_enabled=false, got ${statusResp.text}`);
+    assert(statusResp.json?.current_run === null, `expected current_run=null, got ${statusResp.text}`);
+
+    const triggerResp = await postIpQuality(port);
+    assert(triggerResp.status === 403, `expected /ipquality=403 when disabled, got ${triggerResp.status}`);
+    assert(triggerResp.json?.error === 'ipquality disabled', `unexpected /ipquality disabled body: ${triggerResp.text}`);
+  });
+}
+
+async function testIpqualityReturnsRunningBeforeRevalidatingScriptPath(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'ipquality_running_before_revalidate');
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: 'relative-ipquality.sh',
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    fs.writeFileSync(files.ipqualityStateFile, JSON.stringify({
+      current_run: {
+        run_id: '20260409T010203Z_regression_ipquality_running1',
+        status: 'running',
+        started_at: '2026-04-09T01:02:03.000Z'
+      },
+      last_success: null,
+      last_failure: null,
+      updated_at: '2026-04-09T01:02:03.000Z'
+    }), 'utf8');
+
+    const resp = await postIpQuality(port);
+    assert(resp.status === 200, `expected /ipquality=200 while run already active, got ${resp.status}`);
+    assert(resp.json?.state === 'running', `expected state=running, got ${resp.text}`);
+    assert(
+      resp.json?.run_id === '20260409T010203Z_regression_ipquality_running1',
+      `expected existing run_id to be reused, got ${resp.text}`
+    );
+  });
+}
+
+async function testIpqualityRejectRelativeScriptPath(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'ipquality_relative_path');
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: 'relative-ipquality.sh',
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const resp = await postIpQuality(port);
+    assert(resp.status === 500, `expected /ipquality=500 for relative path, got ${resp.status}`);
+    assert(resp.json?.error === 'ipquality script path must be absolute', `unexpected error: ${resp.text}`);
+  });
+}
+
+async function testIpqualityRejectNonRegularFile(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'ipquality_not_regular_file');
+  const targetDir = path.join(files.dir, 'ipquality_dir');
+  fs.mkdirSync(targetDir, { recursive: true });
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: targetDir,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const resp = await postIpQuality(port);
+    assert(resp.status === 500, `expected /ipquality=500 for directory path, got ${resp.status}`);
+    assert(resp.json?.error === 'ipquality script is not a regular file', `unexpected error: ${resp.text}`);
+  });
+}
+
+async function testIpqualityStartupRepairsStaleRunningState(tmpRoot, sink) {
+  const files = makeCaseFiles(tmpRoot, 'ipquality_startup_repair');
+  const scriptPath = path.join(files.dir, 'ipquality_success.sh');
+  writeShellScript(scriptPath, 'echo "https://Report.Check.Place/ip/REPAIR123.svg"\nexit 0');
+  fs.writeFileSync(files.ipqualityStateFile, JSON.stringify({
+    current_run: {
+      run_id: '20260401T000000Z_regression_ipquality_deadbe',
+      status: 'running',
+      started_at: '2026-04-01T00:00:00.000Z'
+    },
+    last_success: null,
+    last_failure: null,
+    updated_at: '2026-04-01T00:00:00.000Z'
+  }), 'utf8');
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const statusResp = await postIpQualityStatus(port);
+    assert(statusResp.status === 200, `expected /ipquality/status=200, got ${statusResp.status}`);
+    assert(statusResp.json?.current_run === null, `expected stale current_run repaired on startup, got ${statusResp.text}`);
+    assert(
+      statusResp.json?.last_failure?.error === 'service_restarted_during_ipquality_run',
+      `expected stale running state repaired into last_failure, got ${statusResp.text}`
+    );
+  });
+}
+
+async function testIpqualityReturnsRunningWhileTaskIsActive(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('ipquality running state')) return;
+  const files = makeCaseFiles(tmpRoot, 'ipquality_running');
+  const scriptPath = path.join(files.dir, 'ipquality_sleep.sh');
+  writeShellScript(scriptPath, 'sleep 2\necho "https://Report.Check.Place/ip/RUNNING123.svg"\nexit 0');
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const started = await postIpQuality(port);
+    assert(started.status === 200, `expected /ipquality start=200, got ${started.status}`);
+    assert(started.json?.state === 'started', `expected started state, got ${started.text}`);
+    assert(!Object.prototype.hasOwnProperty.call(started.json || {}, 'forced'), `did not expect forced in response, got ${started.text}`);
+    const runId = String(started.json?.run_id || '');
+    assert(runId, `expected run_id in /ipquality start response, got ${started.text}`);
+
+    const running = await postIpQuality(port);
+    assert(running.status === 200, `expected second /ipquality=200, got ${running.status}`);
+    assert(running.json?.state === 'running', `expected running state, got ${running.text}`);
+    assert(!Object.prototype.hasOwnProperty.call(running.json || {}, 'forced'), `did not expect forced in response, got ${running.text}`);
+    assert(running.json?.run_id === runId, `expected running response to reuse run_id=${runId}, got ${running.text}`);
+
+    await waitUntil(async () => {
+      const status = await postIpQualityStatus(port);
+      return status.json?.last_success?.report_url === 'https://Report.Check.Place/ip/RUNNING123.svg';
+    }, {
+      timeoutMs: 8000,
+      intervalMs: 150,
+      label: 'expected ipquality run to converge to last_success'
+    });
+  });
+}
+
+async function testIpqualitySuccessPersistsLastSuccess(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('ipquality success persistence')) return;
+  const files = makeCaseFiles(tmpRoot, 'ipquality_success');
+  const scriptPath = path.join(files.dir, 'ipquality_success.sh');
+  writeShellScript(scriptPath, 'echo "报告链接: https://Report.Check.Place/ip/SUCCESS123.svg"\nexit 0');
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const started = await postIpQuality(port);
+    assert(started.status === 200, `expected /ipquality=200, got ${started.status}`);
+    assert(!Object.prototype.hasOwnProperty.call(started.json || {}, 'forced'), `did not expect forced in response, got ${started.text}`);
+
+    await waitUntil(async () => {
+      const status = await postIpQualityStatus(port);
+      return status.json?.last_success?.report_url === 'https://Report.Check.Place/ip/SUCCESS123.svg';
+    }, {
+      timeoutMs: 8000,
+      intervalMs: 150,
+      label: 'expected ipquality last_success to be persisted'
+    });
+
+    const state = JSON.parse(fs.readFileSync(files.ipqualityStateFile, 'utf8'));
+    const status = await postIpQualityStatus(port);
+    assert(
+      !Object.prototype.hasOwnProperty.call(status.json?.last_success || {}, 'stdout_excerpt'),
+      `did not expect stdout_excerpt in /ipquality/status success payload, got ${status.text}`
+    );
+    assert(state.current_run === null, `expected current_run cleared after success, got ${JSON.stringify(state)}`);
+    assert(
+      state.last_success?.report_url === 'https://Report.Check.Place/ip/SUCCESS123.svg',
+      `expected report_url persisted, got ${JSON.stringify(state)}`
+    );
+    assert(!state.last_failure, `expected last_failure cleared after success, got ${JSON.stringify(state)}`);
+  });
+}
+
+async function testIpqualityFailurePersistsLastFailure(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('ipquality failure persistence')) return;
+  const files = makeCaseFiles(tmpRoot, 'ipquality_failure');
+  const scriptPath = path.join(files.dir, 'ipquality_failure.sh');
+  writeShellScript(scriptPath, 'echo "no report here"\nexit 0');
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const started = await postIpQuality(port);
+    assert(started.status === 200, `expected /ipquality=200, got ${started.status}`);
+    assert(!Object.prototype.hasOwnProperty.call(started.json || {}, 'forced'), `did not expect forced in response, got ${started.text}`);
+
+    await waitUntil(async () => {
+      const status = await postIpQualityStatus(port);
+      return status.json?.last_failure?.error === 'ipquality report url not found';
+    }, {
+      timeoutMs: 8000,
+      intervalMs: 150,
+      label: 'expected ipquality failure to be persisted'
+    });
+
+    const state = JSON.parse(fs.readFileSync(files.ipqualityStateFile, 'utf8'));
+    const status = await postIpQualityStatus(port);
+    assert(
+      !Object.prototype.hasOwnProperty.call(status.json?.last_failure || {}, 'stdout_excerpt'),
+      `did not expect stdout_excerpt in /ipquality/status failure payload, got ${status.text}`
+    );
+    assert(state.current_run === null, `expected current_run cleared after failure, got ${JSON.stringify(state)}`);
+    assert(
+      state.last_failure?.error === 'ipquality report url not found',
+      `expected last_failure persisted, got ${JSON.stringify(state)}`
+    );
+  });
+}
+
+async function testIpqualityFailureMismatchDoesNotRecordFailure(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('ipquality failure mismatch')) return;
+  const files = makeCaseFiles(tmpRoot, 'ipquality_failure_mismatch');
+  const scriptPath = path.join(files.dir, 'ipquality_failure_mismatch.sh');
+  const markerPath = path.join(files.dir, 'ipquality_failure_mismatch.done');
+  writeShellScript(
+    scriptPath,
+    `sleep 1\nprintf done > "${markerPath}"\necho "no report here"\nexit 0`
+  );
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const started = await postIpQuality(port);
+    assert(started.status === 200, `expected /ipquality=200, got ${started.status}`);
+    const startedAt = String(started.json?.started_at || '');
+    assert(startedAt, `expected started_at in response, got ${started.text}`);
+
+    const replacementRunId = '20260409T000000Z_regression_ipquality_replaced1';
+    fs.writeFileSync(files.ipqualityStateFile, JSON.stringify({
+      current_run: {
+        run_id: replacementRunId,
+        status: 'running',
+        started_at: startedAt
+      },
+      last_success: null,
+      last_failure: null,
+      updated_at: startedAt
+    }), 'utf8');
+
+    await waitUntil(() => fs.existsSync(markerPath), {
+      timeoutMs: 5000,
+      intervalMs: 100,
+      label: 'expected mismatch ipquality failure script to finish'
+    });
+    await sleep(300);
+
+    const status = await postIpQualityStatus(port);
+    assert(status.status === 200, `expected /ipquality/status=200, got ${status.status}`);
+    assert(
+      status.json?.current_run?.run_id === replacementRunId,
+      `expected replacement current_run to remain after mismatch, got ${status.text}`
+    );
+    assert(!status.json?.last_success, `expected last_success to remain empty after mismatch, got ${status.text}`);
+    assert(!status.json?.last_failure, `expected last_failure to remain empty after mismatch, got ${status.text}`);
+
+    const info = await postInfo(port);
+    assert(info.status === 200, `expected /info=200, got ${info.status}`);
+    const failed = Number(info.json?.runtime_metrics?.counters?.ipquality_runs_failed_total || 0);
+    assert(failed === 0, `expected mismatch run not to increment failed counter, got ${info.text}`);
   });
 }
 
@@ -1511,6 +1885,42 @@ const CASES = [
   {
     title: 'http endpoints reject non-object JSON bodies with 400',
     run: testRejectNonObjectJsonBodies
+  },
+  {
+    title: 'ipquality status reports disabled state while trigger endpoint stays forbidden',
+    run: testIpqualityStatusReportsDisabled
+  },
+  {
+    title: 'ipquality returns running before revalidating script path when a run already exists',
+    run: testIpqualityReturnsRunningBeforeRevalidatingScriptPath
+  },
+  {
+    title: 'ipquality rejects relative script path',
+    run: testIpqualityRejectRelativeScriptPath
+  },
+  {
+    title: 'ipquality rejects non-regular script path',
+    run: testIpqualityRejectNonRegularFile
+  },
+  {
+    title: 'ipquality startup repairs stale running state into last_failure',
+    run: testIpqualityStartupRepairsStaleRunningState
+  },
+  {
+    title: 'ipquality returns running while an existing run is still active',
+    run: testIpqualityReturnsRunningWhileTaskIsActive
+  },
+  {
+    title: 'ipquality success persists last_success and clears current_run',
+    run: testIpqualitySuccessPersistsLastSuccess
+  },
+  {
+    title: 'ipquality failure persists last_failure when report url is missing',
+    run: testIpqualityFailurePersistsLastFailure
+  },
+  {
+    title: 'ipquality failure result is dropped when current_run no longer matches',
+    run: testIpqualityFailureMismatchDoesNotRecordFailure
   },
   {
     title: 'pending session with missing old_ipv4 does not recover baseline from ip_state',

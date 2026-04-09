@@ -20,6 +20,9 @@
   - `http_flow`：`CHANGEIP_HTTP_FLOW_FILE`（可参考 `flows/samples/ippanel.boil.network.sample.json`）
 - 开启 IPv4 监测上报（推荐，用于自动播报与会话编辑）
 - 可选开启 IPv6 监测上报（写入 iplog 并通知管理员；不向频道播报）
+- 可选开启 `/ipquality`，用于在 VPS 本机异步执行固定路径的 IPQuality 脚本
+  - 需要额外配置：`IPQUALITY_ENABLED=1`、`IPQUALITY_SCRIPT_PATH=/abs/path/to/ip.sh`
+  - 当前阶段仅提供本机触发与状态查询，不负责“每日一次”业务判断，也不直接参与 `/changeip` 会话
 
 若使用 boil 面板：请同时阅读 `docs/BOIL_FLOW.md`（包含变量映射、重试策略与“串台”排障建议）。
 
@@ -57,6 +60,12 @@ chmod +x install.sh uninstall.sh
 
 补充：若你启用了 `/changeip`，安装脚本会自动启用 `IP_EVENTS_ENABLED=1`，并继续要求填写 `IP_EVENTS_ENDPOINT/IP_EVENTS_TOKEN`。
 
+若你启用了 `/ipquality`：
+
+- 安装脚本只会把 `IPQUALITY_*` 写入配置，不会帮你下载或更新 IPQuality 脚本
+- 建议先把脚本固定到 VPS 本地路径（例如 `/root/IPQuality/ip.sh`），再运行安装
+- 即使安装时路径还不存在，你也可以先完成部署；等真正调用 `/ipquality` 时，服务会按当前文件状态返回明确错误
+
 注意：`./install.sh` 每次执行都会完整覆盖 `/etc/default/changeip-http`，不会保留旧文件中的额外自定义环境变量。
 
 ## 3. 修改配置
@@ -75,6 +84,11 @@ systemctl restart changeip-http
 
 - 重新运行 `./install.sh` 也可以“重写配置文件并重启”，但会提示你重新输入参数；若你不想改 bot/worker 配置，务必沿用原 token。
 - `./install.sh` 会完整重写 `/etc/default/changeip-http`。如果你手工加过自定义变量（例如 provider 所需变量），请先备份并在安装后恢复。
+- 若你启用了 `/ipquality`，常改的额外变量有：
+  - `IPQUALITY_ENABLED`
+  - `IPQUALITY_SCRIPT_PATH`
+  - `IPQUALITY_STATE_FILE`
+  - `IPQUALITY_TIMEOUT_SECONDS`
 
 ## 4. 更新代码（GitHub 更新后）
 
@@ -147,7 +161,42 @@ curl -X POST http://127.0.0.1:8787/changeip -H 'Content-Type: application/json' 
 - 最终结果请看后续事件：`change_succeeded` / `change_no_change` / `change_failed`。
 - 若返回 `409 change already in progress`，表示当前已有会话未收敛；可用返回里的 `op_id` 继续跟踪同一会话结果。
 
-### 6.5 Boil 场景 5 分钟验收清单
+### 6.5 `/ipquality`（可选）
+
+前提：
+
+- `IPQUALITY_ENABLED=1`
+- `IPQUALITY_SCRIPT_PATH` 指向 VPS 本地已存在的固定脚本
+
+触发一次检测：
+
+```bash
+curl -X POST http://127.0.0.1:8787/ipquality \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"<AUTH_TOKEN>"}'
+```
+
+查看最近状态：
+
+```bash
+curl -X POST http://127.0.0.1:8787/ipquality/status \
+  -H 'Content-Type: application/json' \
+  -d '{"token":"<AUTH_TOKEN>"}'
+```
+
+判读方式：
+
+- `state=started`：本次请求已创建新的后台任务
+- `state=running`：当前已有检测在跑，本次不会重复启动第二份脚本
+- `last_success.report_url`：最近一次成功提取出的在线报告链接
+- `last_failure.error`：最近一次失败原因
+
+补充：
+
+- 当前阶段不会自动回调 CarpoolNotifier，也不内置“每天只跑一次”判断
+- 服务重启时若发现旧的 `current_run` 还停留在运行中，会把它修复成 `last_failure.error=service_restarted_during_ipquality_run`
+
+### 6.6 Boil 场景 5 分钟验收清单
 
 1) 检查关键变量是否齐全：
 
@@ -247,8 +296,36 @@ journalctl -u changeip-http -n 200 --no-pager
 - 常见原因：上一轮还在等待监测窗口、重启后恢复中、或终态事件上报失败导致会话未清空
 - 排查建议：
   - 查看日志：`journalctl -u changeip-http -n 200 --no-pager`
-  - 查看会话文件：`cat /var/lib/changeip-http/pending_change.json`
-  - 等待当前会话收敛；不要重复强制触发同一台 VPS
+- 查看会话文件：`cat /var/lib/changeip-http/pending_change.json`
+- 等待当前会话收敛；不要重复强制触发同一台 VPS
+
+### `/ipquality` 返回 403
+
+- `IPQUALITY_ENABLED=0`
+- 或者你改完配置后还没 `systemctl restart changeip-http`
+
+### `/ipquality` 返回 500
+
+常见原因：
+
+- `IPQUALITY_SCRIPT_PATH` 不是绝对路径
+- `IPQUALITY_SCRIPT_PATH` 不存在、不可读，或不是常规文件
+- 脚本执行超时（`IPQUALITY_TIMEOUT_SECONDS`）
+- 脚本输出里没提取到 `https://...svg` 报告链接
+- `IPQUALITY_STATE_FILE` 不是合法 JSON 对象，导致状态读写报错
+
+优先排查：
+
+```bash
+journalctl -u changeip-http -n 200 --no-pager
+cat /var/lib/changeip-http/ipquality_state.json
+```
+
+### `/ipquality/status` 看不到最近结果
+
+- 若 `last_success` 和 `last_failure` 都为空，通常表示这台机器还没成功跑过任何一次检测
+- 若只有 `current_run`，说明脚本仍在执行中；再次触发 `/ipquality` 只会返回同一个 `run_id`
+- 若服务刚在运行中重启，旧 run 会被修复为 `last_failure.error=service_restarted_during_ipquality_run`
 
 ### Worker 返回 401
 
@@ -273,7 +350,7 @@ journalctl -u changeip-http -n 200 --no-pager
 
 ## 10. 回归脚本（开发验证）
 
-在调整 `/changeip` 相关逻辑后，建议运行：
+在调整 `/changeip`、`/ipquality`、状态文件或安装脚本后，建议运行：
 
 ```bash
 cd /root/ip-changer

@@ -127,6 +127,26 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   REBOOT_DELAY_MINUTES="$(prompt_int_or_neg1 "重启延迟（分钟，-1 表示不重启）" "1" "1" "15")"
 fi
 
+read -rp "是否启用 IPQuality 附加能力 /ipquality? [y/N]: " IPQUALITY_ENABLED_INPUT
+IPQUALITY_ENABLED_INPUT="${IPQUALITY_ENABLED_INPUT:-N}"
+IPQUALITY_ENABLED=0
+case "$(echo "$IPQUALITY_ENABLED_INPUT" | tr '[:upper:]' '[:lower:]')" in
+  y|yes|1) IPQUALITY_ENABLED=1 ;;
+esac
+
+IPQUALITY_SCRIPT_PATH=""
+IPQUALITY_STATE_FILE="/var/lib/changeip-http/ipquality_state.json"
+IPQUALITY_TIMEOUT_SECONDS="600"
+if [ "$IPQUALITY_ENABLED" -eq 1 ]; then
+  read -rp "IPQuality 脚本绝对路径 [默认 /root/IPQuality/ip.sh]: " IPQUALITY_SCRIPT_PATH
+  IPQUALITY_SCRIPT_PATH="${IPQUALITY_SCRIPT_PATH:-/root/IPQuality/ip.sh}"
+
+  if [ ! -f "$IPQUALITY_SCRIPT_PATH" ]; then
+    echo "警告：未找到 IPQuality 脚本文件：$IPQUALITY_SCRIPT_PATH"
+    echo "你仍然可以继续安装，但 /ipquality 将在脚本存在之前返回 500。"
+  fi
+fi
+
 read -rp "入站鉴权密钥 AUTH_TOKEN（留空则自动生成）: " AUTH_TOKEN
 if [ -z "$AUTH_TOKEN" ]; then
   if command -v openssl >/dev/null 2>&1; then
@@ -236,6 +256,14 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
 else
   echo "CHANGEIP_ENABLED: 0"
 fi
+if [ "$IPQUALITY_ENABLED" -eq 1 ]; then
+  echo "IPQUALITY_ENABLED: 1"
+  echo "IPQUALITY_SCRIPT_PATH: $IPQUALITY_SCRIPT_PATH"
+  echo "IPQUALITY_STATE_FILE: $IPQUALITY_STATE_FILE"
+  echo "IPQUALITY_TIMEOUT_SECONDS: $IPQUALITY_TIMEOUT_SECONDS"
+else
+  echo "IPQUALITY_ENABLED: 0"
+fi
 if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
   echo "IP_EVENTS_ENABLED: 1"
   echo "IP_EVENTS_ENDPOINT: $IP_EVENTS_ENDPOINT"
@@ -290,6 +318,17 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
       printf 'CHANGEIP_HTTP_FLOW_FILE=%s\n' "$(env_quote "$CHANGEIP_HTTP_FLOW_FILE")" >>"$ENV_FILE"
       ;;
   esac
+fi
+
+if [ "$IPQUALITY_ENABLED" -eq 1 ]; then
+  mkdir -p "$(dirname "$IPQUALITY_STATE_FILE")"
+  chmod 700 "$(dirname "$IPQUALITY_STATE_FILE")" || true
+  {
+    printf 'IPQUALITY_ENABLED=%s\n' "$(env_quote "1")"
+    printf 'IPQUALITY_SCRIPT_PATH=%s\n' "$(env_quote "$IPQUALITY_SCRIPT_PATH")"
+    printf 'IPQUALITY_STATE_FILE=%s\n' "$(env_quote "$IPQUALITY_STATE_FILE")"
+    printf 'IPQUALITY_TIMEOUT_SECONDS=%s\n' "$(env_quote "$IPQUALITY_TIMEOUT_SECONDS")"
+  } >>"$ENV_FILE"
 fi
 
 if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
@@ -373,6 +412,14 @@ if [ "$CHANGEIP_ENABLED" -eq 1 ]; then
   fi
 else
   echo "未启用 /changeip"
+fi
+if [ "$IPQUALITY_ENABLED" -eq 1 ]; then
+  echo "已启用 /ipquality"
+  echo "IPQuality 脚本路径: $IPQUALITY_SCRIPT_PATH"
+  echo "IPQUALITY_STATE_FILE: $IPQUALITY_STATE_FILE"
+  echo "IPQUALITY_TIMEOUT_SECONDS: $IPQUALITY_TIMEOUT_SECONDS"
+else
+  echo "未启用 /ipquality"
 fi
 if [ "$IP_EVENTS_ENABLED" -eq 1 ]; then
   echo "已启用 ip-events 上报"
