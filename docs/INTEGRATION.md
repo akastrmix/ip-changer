@@ -93,7 +93,7 @@ CarpoolNotifier 的 `/ipquality` 命令通过同一套 `CHANGEIP_ENDPOINTS_JSON`
 
 - `POST /ipquality`
   - 请求：JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
-  - 若本机没有运行中的检测，会落盘 `current_run`、后台执行 `IPQUALITY_SCRIPT_PATH -n`、立即返回 `state="started"`
+  - 若本机没有运行中的检测，会落盘 `current_run`、后台执行 `IPQUALITY_SCRIPT_PATH -4 -n`、立即返回 `state="started"`
   - 若本机已有运行中的检测，直接返回同一个 `run_id` 与 `state="running"`，不会并发启动第二个脚本
 - `POST /ipquality/status`
   - 请求：JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
@@ -104,6 +104,7 @@ CarpoolNotifier 的 `/ipquality` 命令通过同一套 `CHANGEIP_ENDPOINTS_JSON`
 
 - 每日一次、等待用户列表、完成后私聊通知、管理员 `/ipquality refresh` 都由 CarpoolNotifier 管理。
 - VPS 只负责“启动一次脚本、持久化当前/最近结果、暴露 status”。
+- 当前契约只传递一条 IPv4 质量报告 URL；IPv6 质量报告要先扩展两端契约，不要复用同一个 `report_url` 字段。
 - 详细的 bot 侧缓存 / 轮询行为见 CarpoolNotifier 的 `docs/changeip/IP_CHANGER.md`。
 
 ## 3. 方向 B：ip-changer → CarpoolNotifier（事件流上报）

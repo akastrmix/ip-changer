@@ -52,7 +52,7 @@ function extractReportUrl(text) {
 }
 
 function spawnIpqualityProcess(config) {
-  return spawn('/bin/bash', [config.ipqualityScriptPath, '-n'], {
+  return spawn('/bin/bash', [config.ipqualityScriptPath, '-4', '-n'], {
     detached: USE_DETACHED_PROCESS_GROUP,
     stdio: ['ignore', 'pipe', 'pipe']
   });

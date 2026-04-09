@@ -233,7 +233,7 @@ HTTP 防护约束（资源与稳定性）：
   - `{ ok:true, state:"running", run_id, started_at, server_label }`
 - 若当前没有运行中的 run：
   - 会先落盘 `current_run`
-  - 再异步执行 `/bin/bash <IPQUALITY_SCRIPT_PATH> -n`
+  - 再异步执行 `/bin/bash <IPQUALITY_SCRIPT_PATH> -4 -n`
   - 立即返回 `200`：
     - `{ ok:true, state:"started", run_id, started_at, server_label }`
 - 成功条件：
@@ -425,3 +425,7 @@ JSON 对象：
 
 - 同一时刻只允许一个活动 `current_run`
 - 若 `current_run` 已存在，新的 `/ipquality` 触发不会重复启动脚本，而是直接返回当前 `run_id`
+
+当前 `/ipquality` 明确只生成 IPv4 报告，并只暴露一个 `last_success.report_url`。
+
+后续若要支持 IPv6 质量报告，不要重新依赖“取最后一个 svg 链接”这类输出顺序。应先破坏性扩展 `/ipquality/status` 与状态文件，例如同时持久化 `ipv4_report_url` / `ipv6_report_url`，再同步扩展 CarpoolNotifier 的 D1 缓存、消息模板和每日缓存判定。

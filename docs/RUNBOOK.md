@@ -64,7 +64,7 @@ chmod +x install.sh uninstall.sh
 
 - 仓库自带固定版本脚本：`vendor/ipquality/ip.sh`
 - 安装脚本默认会把 `IPQUALITY_SCRIPT_PATH` 指向当前仓库内的 `vendor/ipquality/ip.sh`
-- ip-changer 会用 `/bin/bash <IPQUALITY_SCRIPT_PATH> -n` 执行；`-n` 表示跳过 IPQuality 自己的依赖安装器
+- ip-changer 会用 `/bin/bash <IPQUALITY_SCRIPT_PATH> -4 -n` 执行；`-4` 表示只生成 IPv4 报告，`-n` 表示跳过 IPQuality 自己的依赖安装器
 - 若你手动填的路径不存在，也可以先完成部署；等真正调用 `/ipquality` 时，服务会按当前文件状态返回明确错误
 
 注意：`./install.sh` 每次执行都会完整覆盖 `/etc/default/changeip-http`，不会保留旧文件中的额外自定义环境变量。
@@ -191,6 +191,8 @@ curl -X POST http://127.0.0.1:8787/ipquality/status \
 - `state=running`：当前已有检测在跑，本次不会重复启动第二份脚本
 - `last_success.report_url`：最近一次成功提取出的在线报告链接
 - `last_failure.error`：最近一次失败原因
+
+当前 `/ipquality` 只保存 IPv4 报告 URL。若后续要展示 IPv6，应先把状态/HTTP 契约扩展为 `ipv4_report_url` + `ipv6_report_url`，再让 CarpoolNotifier 同步扩展 D1 缓存、Telegram 模板和每日缓存逻辑；不要在只支持单 `report_url` 的契约下重新启用 IPQuality 双栈输出。
 
 补充：
 

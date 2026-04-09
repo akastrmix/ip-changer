@@ -12,10 +12,10 @@
 ip-changer runs this file as:
 
 ```bash
-/bin/bash <IPQUALITY_SCRIPT_PATH> -n
+/bin/bash <IPQUALITY_SCRIPT_PATH> -4 -n
 ```
 
-`-n` skips the upstream script's OS/dependency installer. Install the required command-line tools on the VPS before enabling `/ipquality`.
+`-4` asks upstream IPQuality to generate only the IPv4 report. `-n` skips the upstream script's OS/dependency installer. Install the required command-line tools on the VPS before enabling `/ipquality`.
 
 To update the vendored copy, download `ip.sh` from a specific upstream commit, replace this file, update the commit/hash above, then run:
 

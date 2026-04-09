@@ -1294,7 +1294,8 @@ async function testIpqualitySuccessPersistsLastSuccess(tmpRoot, sink) {
   if (shouldSkipProviderExecutionCase('ipquality success persistence')) return;
   const files = makeCaseFiles(tmpRoot, 'ipquality_success');
   const scriptPath = path.join(files.dir, 'ipquality_success.sh');
-  writeShellScript(scriptPath, 'echo "报告链接: https://Report.Check.Place/ip/SUCCESS123.svg"\nexit 0');
+  const argsPath = path.join(files.dir, 'ipquality_args.txt');
+  writeShellScript(scriptPath, `printf '%s\\n' "$@" > "${argsPath}"\necho "报告链接: https://Report.Check.Place/ip/SUCCESS123.svg"\nexit 0`);
 
   const port = await getFreePort();
   const env = buildEnv({
@@ -1334,6 +1335,8 @@ async function testIpqualitySuccessPersistsLastSuccess(tmpRoot, sink) {
       state.last_success?.report_url === 'https://Report.Check.Place/ip/SUCCESS123.svg',
       `expected report_url persisted, got ${JSON.stringify(state)}`
     );
+    const args = fs.readFileSync(argsPath, 'utf8').trim().split(/\s+/);
+    assert(args.join(' ') === '-4 -n', `expected ipquality script to receive -4 -n, got: ${args.join(' ')}`);
     assert(!state.last_failure, `expected last_failure cleared after success, got ${JSON.stringify(state)}`);
   });
 }

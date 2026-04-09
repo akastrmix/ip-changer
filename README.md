@@ -220,7 +220,8 @@ apt install -y nodejs
       { "token": "YOUR_SHARED_SECRET" }
       ```
     - 触发语义：
-      - 若当前无运行中的检测，会立即落盘 `current_run` 并返回 `200`，后台异步执行 `/bin/bash <IPQUALITY_SCRIPT_PATH> -n`
+      - 若当前无运行中的检测，会立即落盘 `current_run` 并返回 `200`，后台异步执行 `/bin/bash <IPQUALITY_SCRIPT_PATH> -4 -n`
+      - 当前只解析并保存 IPv4 报告 URL；上游脚本的双栈输出会产生两个报告链接，暂不用于本接口
       - 若当前已有运行中的检测，会返回 `200 state=running` 并复用同一个 `run_id`
     - 成功条件：
       - 脚本退出码为 `0`
@@ -356,10 +357,10 @@ IPQuality 脚本绝对路径 [默认 /root/ip-changer/vendor/ipquality/ip.sh]:
 `/ipquality` 运行时会执行：
 
 ```bash
-/bin/bash /root/ip-changer/vendor/ipquality/ip.sh -n
+/bin/bash /root/ip-changer/vendor/ipquality/ip.sh -4 -n
 ```
 
-其中 `-n` 表示跳过 IPQuality 自己的系统检测/依赖安装；请先安装运行依赖：
+其中 `-4` 表示只检测 IPv4；`-n` 表示跳过 IPQuality 自己的系统检测/依赖安装。请先安装运行依赖：
 
 ```bash
 apt update
