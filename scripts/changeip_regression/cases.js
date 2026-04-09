@@ -1341,6 +1341,48 @@ async function testIpqualitySuccessPersistsLastSuccess(tmpRoot, sink) {
   });
 }
 
+async function testIpqualityNonZeroExitWithReportStillPersistsSuccess(tmpRoot, sink) {
+  if (shouldSkipProviderExecutionCase('ipquality nonzero success persistence')) return;
+  const files = makeCaseFiles(tmpRoot, 'ipquality_nonzero_success');
+  const scriptPath = path.join(files.dir, 'ipquality_nonzero_success.sh');
+  writeShellScript(scriptPath, 'echo "报告链接: https://Report.Check.Place/ip/NONZERO123.svg"\nexit 1');
+
+  const port = await getFreePort();
+  const env = buildEnv({
+    port,
+    provider: 'exec',
+    endpoint: `http://127.0.0.1:${sink.port}/internal/ip-events`,
+    execCommand: 'exit 0',
+    ipqualityEnabled: true,
+    ipqualityScriptPath: scriptPath,
+    ipqualityStateFile: files.ipqualityStateFile,
+    stateFile: files.stateFile,
+    pendingFile: files.pendingFile
+  });
+
+  await runWithServer(env, async () => {
+    const started = await postIpQuality(port);
+    assert(started.status === 200, `expected /ipquality=200, got ${started.status}`);
+
+    await waitUntil(async () => {
+      const status = await postIpQualityStatus(port);
+      return status.json?.last_success?.report_url === 'https://Report.Check.Place/ip/NONZERO123.svg';
+    }, {
+      timeoutMs: 8000,
+      intervalMs: 150,
+      label: 'expected ipquality nonzero-with-report to persist as success'
+    });
+
+    const state = JSON.parse(fs.readFileSync(files.ipqualityStateFile, 'utf8'));
+    assert(state.current_run === null, `expected current_run cleared after nonzero success, got ${JSON.stringify(state)}`);
+    assert(
+      state.last_success?.report_url === 'https://Report.Check.Place/ip/NONZERO123.svg',
+      `expected report_url persisted after nonzero exit, got ${JSON.stringify(state)}`
+    );
+    assert(!state.last_failure, `expected last_failure cleared after nonzero success, got ${JSON.stringify(state)}`);
+  });
+}
+
 async function testIpqualityFailurePersistsLastFailure(tmpRoot, sink) {
   if (shouldSkipProviderExecutionCase('ipquality failure persistence')) return;
   const files = makeCaseFiles(tmpRoot, 'ipquality_failure');
@@ -1916,6 +1958,10 @@ const CASES = [
   {
     title: 'ipquality success persists last_success and clears current_run',
     run: testIpqualitySuccessPersistsLastSuccess
+  },
+  {
+    title: 'ipquality nonzero exit with report url still persists last_success',
+    run: testIpqualityNonZeroExitWithReportStillPersistsSuccess
   },
   {
     title: 'ipquality failure persists last_failure when report url is missing',

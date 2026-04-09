@@ -658,7 +658,7 @@ node scripts/changeip_regression.js
 - `/ipquality` 运行中重复触发：返回 `200 state=running` 并复用已有 `run_id`
 - `/ipquality` 成功：会把 `last_success.report_url` 写入 `ipquality_state.json`
 - `/ipquality` 打印了报告链接但退出码非 0：按成功处理并保存报告链接
-- `/ipquality` 成功但输出中无报告链接：会写入 `last_failure.error=ipquality report url not found`
+- `/ipquality` 输出中无报告链接：会写入 `last_failure.error=ipquality report url not found`
 - 脚本快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=script_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - `exec` 命令快速异常退出：`/changeip` 可能已返回 `200`；随后会尽快上报 `change_failed(reason=exec_exited_early)` 并在 `ip-events` 可达时及时清理 `pending_change.json`
 - 脚本快速异常退出 + 首次 `change_failed` 上报被拒：会保留 `pending_change.json` 并由监测循环重试同一终态，成功后再清理
@@ -681,7 +681,7 @@ node scripts/changeip_regression.js
 ## 8. 常见问题
 
 - **Q: 安装脚本会不会影响系统其它服务？**  
-  A: 除创建一个 systemd 服务和一个环境配置文件外，不会更改任何系统配置，也不会安装/卸载系统包。卸载脚本会删除这两项，恢复到安装前状态。
+  A: 除创建一个 systemd 服务、一个环境配置文件，以及运行态状态目录 `/var/lib/changeip-http`（含 `ip_state.json` / `pending_change.json` / `ipquality_state.json`）外，不会更改系统其它配置，也不会安装/卸载系统包。卸载脚本会删除这些系统级改动，恢复到安装前状态。
 
 - **Q: 可以不用 systemd，直接前台运行吗？**  
   A: 可以。在仓库目录直接运行：

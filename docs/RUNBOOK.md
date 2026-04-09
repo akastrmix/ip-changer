@@ -65,6 +65,9 @@ chmod +x install.sh uninstall.sh
 - 仓库自带固定版本脚本：`vendor/ipquality/ip.sh`
 - 安装脚本默认会把 `IPQUALITY_SCRIPT_PATH` 指向当前仓库内的 `vendor/ipquality/ip.sh`
 - ip-changer 会用 `/bin/bash <IPQUALITY_SCRIPT_PATH> -4 -n` 执行；`-4` 表示只生成 IPv4 报告，`-n` 表示跳过 IPQuality 自己的依赖安装器
+- 若目标机还没装依赖，请先执行：
+  - `apt update`
+  - `apt install -y jq curl bc netcat-openbsd dnsutils iproute2`
 - 若你手动填的路径不存在，也可以先完成部署；等真正调用 `/ipquality` 时，服务会按当前文件状态返回明确错误
 
 注意：`./install.sh` 每次执行都会完整覆盖 `/etc/default/changeip-http`，不会保留旧文件中的额外自定义环境变量。
@@ -168,6 +171,9 @@ curl -X POST http://127.0.0.1:8787/changeip -H 'Content-Type: application/json' 
 
 - `IPQUALITY_ENABLED=1`
 - `IPQUALITY_SCRIPT_PATH` 指向 VPS 本地已存在的固定脚本；推荐使用 `/root/ip-changer/vendor/ipquality/ip.sh`
+- 目标机若还没装依赖，先执行：
+  - `apt update`
+  - `apt install -y jq curl bc netcat-openbsd dnsutils iproute2`
 
 触发一次检测：
 
@@ -315,6 +321,7 @@ journalctl -u changeip-http -n 200 --no-pager
 - `IPQUALITY_SCRIPT_PATH` 不存在、不可读，或不是常规文件
 - 脚本执行超时（`IPQUALITY_TIMEOUT_SECONDS`）
 - 脚本输出里没提取到 `https://...svg` 报告链接
+- 目标机缺少 `jq` / `curl` / `bc` / `netcat-openbsd` / `dnsutils` / `iproute2`
 - `IPQUALITY_STATE_FILE` 不是合法 JSON 对象，导致状态读写报错
 
 优先排查：
