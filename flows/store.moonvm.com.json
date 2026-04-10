@@ -1,0 +1,30 @@
+{
+  "base_url": "https://store.moonvm.com",
+  "timeout_ms": 20000,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+  "vars": {
+    "iptoken": "${ENV:MOONVM_IPTOKEN}"
+  },
+  "steps": [
+    {
+      "type": "request",
+      "name": "trigger_changeip",
+      "method": "GET",
+      "url": "/ddns.php?product=10052&flag=changeip&iptoken=${iptoken}",
+      "timeout_ms": 40000,
+      "headers": {
+        "accept": "application/json,text/html;q=0.9,*/*;q=0.8"
+      },
+      "expect_status": [
+        200
+      ],
+      "allow_network_error": true
+    },
+    {
+      "type": "assert",
+      "name": "accept_success_body_or_disconnect",
+      "from": "body",
+      "regex": "^(?:|[\\s\\S]*\\\"ok\\\"\\s*:\\s*true[\\s\\S]*)$"
+    }
+  ]
+}

@@ -39,7 +39,7 @@
 - `uninstall.sh`
   - 卸载脚本：停用并删除 systemd 服务和配置，恢复系统到安装前状态（不删除你的 provider 相关脚本/配置和仓库代码）。
 - `flows/`
-  - `http_flow` 配置目录；示例文件放在 `flows/samples/`（例如 `flows/samples/ippanel.boil.network.sample.json`）。
+  - `http_flow` 配置目录；生产 flow 与示例文件都放在这里（例如 `flows/ippanel.boil.network.HKT.json`、`flows/store.moonvm.com.json`、`flows/samples/store.moonvm.com.sample.json`）。
 - `src/`
   - `change/trigger.js`：`/changeip` 入口编排（会话创建、provider 触发、可选重启）。
   - `change/session.js`：`pending_change` 状态机与 `change_*` 事件构造/上报。
@@ -260,6 +260,8 @@ apt install -y nodejs
 `http_flow` provider 会按 JSON 中的步骤顺序执行 HTTP 流程，适合“登录面板 + 依次点击按钮”这类换 IP 场景。
 
 - 推荐从示例文件开始改：`flows/samples/ippanel.boil.network.sample.json`
+- 若你的 provider 是“访问一个固定 URL 就触发换 IP”（例如 MoonVM DDNS 链接），可直接参考：`flows/samples/store.moonvm.com.sample.json`
+- 当前仓库也提供了按站点命名的生产版 flow：`flows/store.moonvm.com.json`
 - 路径迁移提示：旧路径 `flows/ippanel.boil.network.sample.json` 已废弃，请改用 `flows/samples/ippanel.boil.network.sample.json`
 - 若你使用 boil 面板，建议同时阅读：`docs/BOIL_FLOW.md`
 - boil 现成生产 flow（按服务器拆分）：
@@ -277,6 +279,8 @@ apt install -y nodejs
 - `request` 步骤支持 `retries` 与 `retry_delay_ms`（用于临时失败自动重试；当返回 `429` 且存在 `Retry-After` 头时，会优先按该头等待后再重试）。
 - 单次 `request` 响应体读取默认有大小保护（约 `4 MiB`），超限会立即失败，避免异常大页面占满内存。
 - `http_flow` 里的布尔字段必须写成 JSON 布尔值（`true/false`），不能写字符串（例如 `"true"`）。
+- 对于“本机发起请求后自身公网 IP 立刻变化”的 provider，推荐把触发步骤设为最后一步，并开启 `allow_network_error=true`；这样即使 TCP 在响应返回前被中断，也会交给 `/changeip` 会话监测去判定最终是否成功。
+- 如果上游像 MoonVM 一样会返回 `200 + {"ok":false}` 这种“HTTP 成功但业务失败”的响应，建议在触发步骤后补一条 `assert`，要求“只要拿到了响应体，就必须匹配 `ok:true`”；这样既兼容断连，也不会把坏 token/坏 product 误判成成功触发。
 - `wait_until` 结构为：
   - `request`：要轮询的请求对象（同 `request` 步骤字段）
   - `assert`：判断条件（同 `assert` 步骤字段）
@@ -290,6 +294,14 @@ apt install -y nodejs
 - flow 在执行前会先做编译期校验（JSON 结构、步骤字段、变量引用、正则/状态码格式），不合法会直接返回 `500`。
 
 建议不要把敏感账号密码明文写进 flow 文件，而是放到环境变量，再通过 `${ENV:...}` 引用。
+
+MoonVM 这类“单 URL 触发”场景的最小配置通常如下：
+
+- `CHANGEIP_PROVIDER=http_flow`
+- `CHANGEIP_HTTP_FLOW_FILE=/root/ip-changer/flows/store.moonvm.com.json`
+- `MOONVM_IPTOKEN=<换 IP token>`
+
+示例里使用了浏览器 `User-Agent`，因为实测 `store.moonvm.com/ddns.php?...` 在无浏览器 UA 的客户端上可能返回 `403`；从浏览器或带浏览器 UA 的请求访问时可正常返回 `200` 与 JSON（例如 `{"ok":true,"code":200,"newip":"..."}`）。同样实测坏 token/坏 product 时会返回 `200 + {"ok":false,"code":501}`，所以 MoonVM flow 里额外补了 body 断言。
 
 ### 3.2 IPv4/IPv6 监测与上报说明
 

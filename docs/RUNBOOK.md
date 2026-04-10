@@ -17,7 +17,7 @@
 - 配置 `CHANGEIP_PROVIDER` 与对应 provider 参数，再配置 `REBOOT_DELAY_MINUTES`（可设为 `-1` 禁用重启）
   - `script`：`CHANGEIP_SCRIPT`
   - `exec`：`CHANGEIP_EXEC_COMMAND`
-  - `http_flow`：`CHANGEIP_HTTP_FLOW_FILE`（可参考 `flows/samples/ippanel.boil.network.sample.json`）
+  - `http_flow`：`CHANGEIP_HTTP_FLOW_FILE`（可参考 `flows/samples/ippanel.boil.network.sample.json` 或 `flows/samples/store.moonvm.com.sample.json`）
 - 开启 IPv4 监测上报（推荐，用于自动播报与会话编辑）
 - 可选开启 IPv6 监测上报（写入 iplog 并通知管理员；不向频道播报）
 - 可选开启 `/ipquality`，用于在 VPS 本机异步执行固定路径的 IPQuality 脚本
@@ -25,6 +25,16 @@
   - 当前阶段仅提供本机触发与状态查询，不负责“每日一次”业务判断，也不直接参与 `/changeip` 会话
 
 若使用 boil 面板：请同时阅读 `docs/BOIL_FLOW.md`（包含变量映射、重试策略与“串台”排障建议）。
+
+若使用 MoonVM 这类“访问固定 URL 就换 IP”的 provider：
+
+- 推荐直接用 `http_flow`，不要再包一层 shell 脚本
+- 正式 flow 可直接用 `flows/store.moonvm.com.json`
+- 参考示例 `flows/samples/store.moonvm.com.sample.json`
+- 额外配置环境变量：
+  - `MOONVM_IPTOKEN`
+- 触发步骤建议开启 `allow_network_error=true`，因为 VPS 自己请求换 IP 接口时，公网切换可能会在响应完整返回前中断连接
+- MoonVM 在参数错误时可能返回 `200 + {"ok":false,"code":501}`，所以 flow 里建议再补一条 body 断言：只要拿到了响应体，就必须包含 `ok:true`
 
 ## 2. 标准安装（Debian/Ubuntu）
 
