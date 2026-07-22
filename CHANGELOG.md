@@ -4,7 +4,7 @@
 
 ## Unreleased
 
-（暂无）
+- 文档：生产对接说明从已冻结的 CarpoolNotifier Cloudflare Worker/D1 更新为 AkastrCloud VPS/PostgreSQL；出站节点改用 Git 外 `IPCHANGER_CONFIG_FILE` + 独立 token file，入站事件继续使用 `/internal/ip-events` 与 `2026-04-03.v1`，接口行为未变。
 
 ## 0.7.5
 

@@ -147,9 +147,9 @@ curl -X POST http://127.0.0.1:8787/info -H 'Content-Type: application/json' -d '
 
 ### 6.3 IPv4/IPv6 上报验证（推荐）
 
-最直接的验证方式是在 CarpoolNotifier 增加/使用测试命令向频道发消息（例如 `/test_ip_channel`）。
+不要用生产 Bot 或频道消息验证节点。优先运行本仓库回归；需要端到端验证时，使用 AkastrCloud 的 fake provider/隔离 Bot Gate。
 
-若要验证 `ip-changer → Worker` 是否通：
+若要只读观察 `ip-changer → AkastrCloud` 是否通：
 
 - 检查日志：`journalctl -u changeip-http -n 200 --no-pager`
 - 检查状态文件：`cat /var/lib/changeip-http/ip_state.json`
@@ -208,11 +208,11 @@ curl -X POST http://127.0.0.1:8787/ipquality/status \
 - `last_success.report_url`：最近一次成功提取出的在线报告链接
 - `last_failure.error`：最近一次失败原因
 
-当前 `/ipquality` 只保存 IPv4 报告 URL。若后续要展示 IPv6，应先把状态/HTTP 契约扩展为 `ipv4_report_url` + `ipv6_report_url`，再让 CarpoolNotifier 同步扩展 D1 缓存、Telegram 模板和每日缓存逻辑；不要在只支持单 `report_url` 的契约下重新启用 IPQuality 双栈输出。
+当前 `/ipquality` 只保存 IPv4 报告 URL。若后续要展示 IPv6，应先把状态/HTTP 契约扩展为 `ipv4_report_url` + `ipv6_report_url`，再让 AkastrCloud 同步扩展 PostgreSQL 运行态、Carpool Telegram 模板和每日缓存逻辑；不要在只支持单 `report_url` 的契约下重新启用 IPQuality 双栈输出。
 
 补充：
 
-- 当前阶段不会自动回调 CarpoolNotifier，也不内置“每天只跑一次”判断
+- ip-changer 不主动回调 IPQuality 结果，也不内置“每天只跑一次”判断；AkastrCloud worker 通过 `/ipquality/status` 轮询并管理缓存/通知
 - 服务重启时若发现旧的 `current_run` 还停留在运行中，会把它修复成 `last_failure.error=service_restarted_during_ipquality_run`
 
 ### 6.6 Boil 场景 5 分钟验收清单
@@ -265,7 +265,7 @@ journalctl -u changeip-http -n 200 --no-pager
 - `AUTH_TOKEN` / `IP_EVENTS_TOKEN` 必须随机且保密
 - token 轮换：
   - 修改 VPS：`/etc/default/changeip-http` 后重启
-  - 同步更新 Worker/CarpoolNotifier 对应的 token
+  - 同步原子替换 AkastrCloud `IPCHANGER_CONFIG_FILE` 引用的对应 token file
 
 ## 8. 常见问题排障
 
@@ -284,7 +284,7 @@ journalctl -u changeip-http -n 200 --no-pager
 
 ### `/info` 或 `/changeip` 返回 403
 
-- token 不匹配（CarpoolNotifier 中该 `SERVER_LABEL` 的 token 与 VPS 的 `AUTH_TOKEN` 必须一致；通常在 `CHANGEIP_TOKENS_JSON` 里配置）
+- token 不匹配（AkastrCloud `IPCHANGER_CONFIG_FILE` 引用的对应 token file 必须与节点 `AUTH_TOKEN` 一致）
 - 或 `/changeip` 未启用（`CHANGEIP_ENABLED=0`）
 
 ### `/changeip` 返回 500
@@ -347,7 +347,7 @@ cat /var/lib/changeip-http/ipquality_state.json
 - 若只有 `current_run`，说明脚本仍在执行中；再次触发 `/ipquality` 只会返回同一个 `run_id`
 - 若服务刚在运行中重启，旧 run 会被修复为 `last_failure.error=service_restarted_during_ipquality_run`
 
-### Worker 返回 401
+### AkastrCloud 事件入口返回 401
 
 - `IP_EVENTS_TOKEN` 不一致（多台 VPS 建议共用同一个 token）
 
@@ -360,11 +360,11 @@ cat /var/lib/changeip-http/ipquality_state.json
 
 你已确认：不做向下兼容，因此 `ip-changer` 只上报到 `/internal/ip-events`：
 
-1) CarpoolNotifier：配置 secret `IP_EVENTS_TOKEN`
+1) AkastrCloud API：在 Git 外 secret 中配置 `IP_EVENTS_TOKEN`
 2) VPS ip-changer：配置并启用：
    - `IP_EVENTS_ENABLED=1`
-   - `IP_EVENTS_ENDPOINT=https://<worker>/internal/ip-events`
-   - `IP_EVENTS_TOKEN=<same as worker secret>`
+   - `IP_EVENTS_ENDPOINT=https://<akastrcloud-domain>/internal/ip-events`
+   - `IP_EVENTS_TOKEN=<same as AkastrCloud API secret>`
    - `IP_MONITOR_ENABLED=1`（IPv4 监测）
    - `IPV6_MONITOR_ENABLED=1`（可选，IPv6 监测；写入 iplog 并通知管理员；不向频道播报）
 

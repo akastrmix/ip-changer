@@ -1,10 +1,10 @@
-# ip-changer ↔ CarpoolNotifier 对接说明
+# ip-changer ↔ AkastrCloud Carpool 模块对接说明
 
-本文档描述 `ip-changer` 与 CarpoolNotifier（Cloudflare Worker 上的 Telegram bot）之间的接口契约与配置方式，目标是：多 VPS 可扩容、低耦合、易排障。
+本文档描述独立 `ip-changer` 节点与 AkastrCloud VPS 内 Carpool 业务模块之间的接口契约与配置方式。Telegram Bot 仍保持独立 Token、webhook、模板和任务类型；共享 VPS/PostgreSQL 基础设施不等于合并 Bot。
 
 破坏性更新说明：
 
-- 你已确认不做向下兼容，因此本项目以 **事件流** 形式与 CarpoolNotifier 对接：
+- 当前只使用 **事件流** 与 AkastrCloud 对接：
   - 唯一上报入口：`POST /internal/ip-events`
   - 旧的 `/internal/ip-changed` / `IP_REPORT_*` 不再使用
 
@@ -13,7 +13,7 @@
 ### 1.1 `SERVER_LABEL`
 
 - 每台 VPS 必须设置唯一且稳定的 `SERVER_LABEL`（例如 `CMHK` / `HKT` / `iCable`）。
-- CarpoolNotifier 以 `server_label` 作为主键存储：
+- AkastrCloud 以 `service_servers` 稳定 UUID 关联节点，并保存节点返回的 `server_label`：
   - 上次 IPv4
   - 上次 IPv6（仅日志/排障用途）
   - 正在进行的换 IP 会话（用于编辑同一条频道播报）
@@ -21,7 +21,7 @@
 
 ### 1.2 `REPORT_CHANNEL`
 
-`ip-changer` 将频道目标透传给 CarpoolNotifier。
+`ip-changer` 将频道目标透传给 AkastrCloud Carpool 模块。
 
 支持两种格式：
 
@@ -32,22 +32,21 @@
 
 可留空：
 
-- `REPORT_CHANNEL` 可以留空，表示不向频道播报（CarpoolNotifier 仍会通知管理员，并使用事件流收敛会话/锁）。
+- `REPORT_CHANNEL` 可以留空，表示不向频道播报（AkastrCloud 仍会通知管理员，并使用事件流收敛会话/锁）。
 - `REPORT_CHANNEL` 若非空，必须是合法 `@channel_username` 或负数 chat_id；格式非法会在 `ip-changer` 启动时直接拒绝。
 
-## 2. 方向 A：CarpoolNotifier → ip-changer（可选一键换 IP）
+## 2. 方向 A：AkastrCloud → ip-changer（可选一键换 IP）
 
 ### 2.1 `/changeip` 触发（可选）
 
 前提：VPS 上 `CHANGEIP_ENABLED=1`、已配置 `CHANGEIP_PROVIDER`，且 ip-events 上报已启用（`IP_EVENTS_ENABLED=1` + endpoint/token）。
 
-CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容）：
+AkastrCloud 配置使用 PostgreSQL 稳定 server UUID 和 Git 外 provider 文件：
 
-- `CHANGEIP_ENDPOINTS_JSON`（vars）：例如 `{"CMHK":"http://<VPS_IP>:8787"}`
-  - 只填 ip-changer 服务器根地址；CarpoolNotifier 会自动推导 `/changeip` 与 `/info`
-- `CHANGEIP_TOKENS_JSON`（secret）：例如 `{"CMHK":"<AUTH_TOKEN>"}`（必须等于 VPS 上 `AUTH_TOKEN`）
-- `CHANGEIP_SERVERS`（vars）：确保包含该服务器；bot 侧可调用的 ip-changer 统一标记为 `script`（例如 `CMHK:script`）
-  - `CHANGEIP_PROVIDER=exec/http_flow` 只属于本机 ip-changer 内部 provider，不能原样写到 CarpoolNotifier 的 `CHANGEIP_SERVERS`
+- `service_servers` 保存节点稳定 UUID、业务 key/label 与能力关系。
+- `IPCHANGER_CONFIG_FILE` 是只读 JSON，`servers[]` 每项包含 `server_id`、`base_url`、`token_file`。
+- `token_file` 必须指向独立 root-only 文件，内容等于节点 `AUTH_TOKEN`；token 不进入 JSON、数据库、Git 或日志。
+- `CHANGEIP_PROVIDER=script/exec/http_flow` 仍只属于 ip-changer 本机，不写入 AkastrCloud provider 配置。
 
 请求：
 
@@ -66,12 +65,12 @@ CarpoolNotifier 配置（按 `SERVER_LABEL` 做映射，便于多服务器扩容
 
 - 若 VPS 设置 `REBOOT_DELAY_MINUTES=-1`，provider 触发仍会执行，但**不会**执行重启。
 - 若 VPS 设置 `REBOOT_DELAY_MINUTES=1..15`，ip-changer 会在启动时要求系统存在 `/usr/sbin/shutdown` 或 `/sbin/shutdown`；缺失时服务不会启动。
-- 若该 VPS 已有进行中的换 IP 会话，`/changeip` 会返回 `409 change already in progress`，并携带现有 `op_id`（CarpoolNotifier 应按“已在进行中”处理，而不是重复触发）。
+- 若该 VPS 已有进行中的换 IP 会话，`/changeip` 会返回 `409 change already in progress`，并携带现有 `op_id`（AkastrCloud 应恢复既有操作，而不是重复触发）。
 - `/changeip` 的 `ok=true` 表示“触发已接受”，不保证此时 provider 已完成启动探测；provider 启动/终态以 `change_*` 事件为准。
 
 ### 2.2 `/info` 查询
 
-CarpoolNotifier 用它来获取：
+AkastrCloud 用它来获取：
 
 - `server_label`
 - `channel`
@@ -89,7 +88,7 @@ CarpoolNotifier 用它来获取：
 
 ### 2.3 `/ipquality` 与 `/ipquality/status`
 
-CarpoolNotifier 的 `/ipquality` 命令通过同一套 `CHANGEIP_ENDPOINTS_JSON` + `CHANGEIP_TOKENS_JSON` 调用 ip-changer。
+AkastrCloud Carpool 的 `/ipquality` 命令通过同一 `IPCHANGER_CONFIG_FILE` provider 和独立 token file 调用 ip-changer。
 
 - `POST /ipquality`
   - 请求：JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
@@ -98,25 +97,25 @@ CarpoolNotifier 的 `/ipquality` 命令通过同一套 `CHANGEIP_ENDPOINTS_JSON`
 - `POST /ipquality/status`
   - 请求：JSON 对象 `{ "token": "<AUTH_TOKEN>" }`
   - 返回 `ipquality_enabled`、`server_label`、`current_run`、`last_success`、`last_failure`
-  - `last_success.report_url` 是 Worker 最终展示给用户的报告 URL
+  - `last_success.report_url` 是 Carpool Bot 最终展示给用户的报告 URL
 
 边界：
 
-- 每日一次、等待用户列表、完成后私聊通知、管理员 `/ipquality refresh` 都由 CarpoolNotifier 管理。
+- 每日缓存、等待用户列表、完成后私聊通知和管理员 reset 都由 AkastrCloud Carpool 模块管理。
 - VPS 只负责“启动一次脚本、持久化当前/最近结果、暴露 status”。
 - 当前契约只传递一条 IPv4 质量报告 URL；IPv6 质量报告要先扩展两端契约，不要复用同一个 `report_url` 字段。
-- 详细的 bot 侧缓存 / 轮询行为见 CarpoolNotifier 的 `docs/changeip/IP_CHANGER.md`。
+- 当前 bot 侧缓存、轮询和幂等行为见 AkastrCloud 主仓库 `docs/CARPOOL.md` 与 `vps/packages/carpool/`。
 
-## 3. 方向 B：ip-changer → CarpoolNotifier（事件流上报）
+## 3. 方向 B：ip-changer → AkastrCloud（事件流上报）
 
 你已确认：不做向下兼容，因此本项目以 **`/internal/ip-events`** 作为唯一上报入口（旧的 `/internal/ip-changed` / `IP_REPORT_*` 不再使用）。
 
-### 3.1 Worker 内部接口
+### 3.1 AkastrCloud 内部接口
 
 - `POST /internal/ip-events`
   - Header：`Authorization: Bearer <IP_EVENTS_TOKEN>`
 
-Worker 侧配置（建议使用 secret）：
+AkastrCloud API 侧配置（Git 外 secret）：
 
 - `IP_EVENTS_TOKEN`
 
@@ -125,8 +124,8 @@ Worker 侧配置（建议使用 secret）：
 VPS 侧配置：
 
 - `IP_EVENTS_ENABLED=1`
-- `IP_EVENTS_ENDPOINT=https://<worker>/internal/ip-events`
-- `IP_EVENTS_TOKEN=<same as worker secret>`
+- `IP_EVENTS_ENDPOINT=https://<akastrcloud-domain>/internal/ip-events`
+- `IP_EVENTS_TOKEN=<same as AkastrCloud API secret>`
 - `SERVER_LABEL=<unique label>`
 - `REPORT_CHANNEL=@xxx` 或 `-100...`
 
@@ -138,12 +137,11 @@ VPS 侧配置：
 
 重要建议：
 
-- 多台 VPS 可以共用同一个 `IP_EVENTS_TOKEN`（Worker 目前按全局单钥匙设计）。
-  - 如未来需要每台 VPS 单独 token，再扩展 Worker 鉴权逻辑即可。
+- 当前生产允许多台节点共用一个 AkastrCloud 入站 `IP_EVENTS_TOKEN`；如未来切为逐节点 token，必须先同步扩展两端契约和轮换 Runbook。
 
 判定规则（v1，与你确认的口径一致）：
 
-- provider 成功触发后会尽快上报 `change_started`（best-effort；允许延迟/丢失；CarpoolNotifier 不依赖该事件来触发“开始更换”播报，而是以调用 `POST /changeip` 成功为准）
+- provider 成功触发后会尽快上报 `change_started`（best-effort；允许延迟/丢失；AkastrCloud 不依赖该事件触发“开始更换”播报，而是以调用 `POST /changeip` 成功为准）
 - provider 启动探测失败时会上报 `change_failed`；若首次上报失败，会保留 pending 会话并重试同一 `change_failed`（`reason` 不变）
 - `change_*` 终态事件上报带短重试（最多 3 次，带退避抖动）；`ipv4_changed/ipv6_changed` 自然事件保持单次上报
 - 若 `pending_change` 字段不合法，会尝试上报 `change_failed(invalid_pending_*)`，成功后清理会话
@@ -171,7 +169,7 @@ VPS 侧配置：
 
 - `channel` 的值必须是 `@xxx`、负数 chat_id（常见为 `-100...`）或空字符串
 - 空字符串表示禁用频道播报
-- `ip-changer` 会始终显式发送 `channel`；Worker 不再接受“省略 channel 再回退旧状态”的旧语义
+- `ip-changer` 会始终显式发送 `channel`；AkastrCloud 不接受“省略 channel 再回退旧状态”的旧语义
 
 ```json
 {
@@ -195,29 +193,29 @@ VPS 侧配置：
 ### 4.1 自然 IP 变化
 
 1. `ip-changer` 发现 IPv4 或 IPv6 变化
-2. `ip-changer` 调用 Worker `/internal/ip-events`（`event=ipv4_changed` 或 `event=ipv6_changed`）
-3. CarpoolNotifier：
+2. `ip-changer` 调用 AkastrCloud `/internal/ip-events`（`event=ipv4_changed` 或 `event=ipv6_changed`）
+3. AkastrCloud Carpool 模块：
    - `ipv4_changed`：保留现有行为（会话编辑/频道与管理员通知/冷却锁）
    - `ipv6_changed`：记录到 `iplog` 事件日志，并通知管理员；不向频道播报
 
 ### 4.2 机器人触发换 IP（provider + 可选重启）
 
 1. 用户/管理员在 Telegram 交互中触发
-2. CarpoolNotifier 调用 `ip-changer /info` 获取基线与频道
-3. CarpoolNotifier 在频道发布“预告”（可选）并安排任务
-4. 到达执行时间后，CarpoolNotifier 调用 `ip-changer /changeip`
+2. AkastrCloud 调用 `ip-changer /info` 获取基线与频道
+3. AkastrCloud 在频道发布“预告”（可选）并安排 PostgreSQL 任务
+4. 到达执行时间后，AkastrCloud worker 调用 `ip-changer /changeip`
 5. VPS 执行 provider；若 `REBOOT_DELAY_MINUTES=1..15` 则按配置重启，`-1` 则不重启
-6. IP 变化后 `ip-changer` 上报 → CarpoolNotifier 编辑同一条频道消息追加结果
+6. IP 变化后 `ip-changer` 上报 → AkastrCloud 编辑同一条频道消息追加结果
 
 ## 5. 常见错误与定位
 
-- Worker 返回 `401 unauthorized`：`IP_EVENTS_TOKEN` 不一致
+- AkastrCloud 返回 `401 unauthorized`：`IP_EVENTS_TOKEN` 不一致
 - `ip-changer /info` 或 `/changeip` 返回 `403`：`AUTH_TOKEN` 不一致或 `/changeip` 未启用
 - 频道无消息：bot 未进频道/无权限，或 `REPORT_CHANNEL` 填写格式不对
 
 ## 6. 跨仓库变更清单（强制）
 
-本仓库与 CarpoolNotifier 通过接口 + 事件契约耦合：**任何一侧改动契约语义，都必须同步改另一侧**，否则一定会出现“事件被拒收/会话不收敛/频道不更新”等线上问题。
+本仓库与 AkastrCloud Carpool 模块通过接口 + 事件契约耦合：**任何一侧改动契约语义，都必须同步改另一侧**，否则一定会出现“事件被拒收/会话不收敛/频道不更新”等线上问题。
 
 触发联动的常见改动：
 
@@ -229,9 +227,9 @@ VPS 侧配置：
 快速定位（对接文件）：
 
 - 本仓库：`docs/SPEC.md`、`src/contracts/ipEvents.js`
-- CarpoolNotifier：`docs/changeip/IP_CHANGER.md`、`docs/changeip/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`
+- AkastrCloud：`docs/CARPOOL.md`、`vps/packages/carpool/src/ip-event-contract.ts`、`vps/packages/integrations/src/ipchanger-http-provider.ts`、`vps/apps/worker/src/main.ts`
 
 交付前必须跑：
 
 - 本仓库：`node scripts/changeip_regression.js`
-- CarpoolNotifier：`bash scripts/check.sh`
+- AkastrCloud：`cd vps && npm run verify`

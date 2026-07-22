@@ -19,19 +19,19 @@
   - `/changeip` 的 `ok=true` 仅表示“触发已接受且会话已落盘，provider 启动已异步调度”，最终结果以 `change_*` 事件为准。
 - 契约稳定：
   - `GET /`、`POST /info`、`POST /changeip`、`POST /ipquality`、`POST /ipquality/status` 与 ip-events 字段语义应尽量保持稳定。
-  - 必要变更时必须同步更新 `docs/SPEC.md`、`docs/INTEGRATION.md`；若命中跨仓库契约，再同步改 CarpoolNotifier 对接端。
+  - 必要变更时必须同步更新 `docs/SPEC.md`、`docs/INTEGRATION.md`；若命中跨仓库契约，再同步改 AkastrCloud VPS 的 Carpool 对接端。
 - 跨仓库联动（重要）：
-  - 当你改动以下任一项，必须同时 review/修改 **CarpoolNotifier**（代码 + 文档 + 回归），否则大概率“单边改动导致线上卡死/不播报/误告警”：
+  - 当你改动以下任一项，必须同时 review/修改 **AkastrCloud 主仓库的 Carpool 模块**（代码 + 文档 + 回归），否则大概率“单边改动导致线上卡死/不播报/误告警”：
     - `/changeip` 或 `/info` 的返回字段/语义/错误码/鉴权（含 `ok`/`op_id`/`provider_error_code`/`ip_events_contract_version` 等）
     - ip-events：`contract_version`、事件枚举、必填字段、幂等键（`server_label + op_id + event`）与乱序/终态优先规则
     - `change_failed.reason` 列表或语义（会影响 bot 文案与告警分流）
     - `REPORT_CHANNEL` “允许为空=禁用频道播报”的语义
   - 快速定位（对接文件）：
     - 本仓库：`docs/SPEC.md`、`docs/INTEGRATION.md`、`src/contracts/ipEvents.js`
-    - CarpoolNotifier：`docs/changeip/IP_CHANGER.md`、`docs/changeip/IP_EVENTS.md`、`src/services/changeip/ipChanger.js`、`src/services/ipChanges/contract.js`
+    - AkastrCloud：`docs/CARPOOL.md`、`vps/packages/carpool/src/ip-event-contract.ts`、`vps/packages/integrations/src/ipchanger-http-provider.ts`、`vps/apps/worker/src/main.ts`
   - 交付前必须跑：
     - 本仓库：`node scripts/changeip_regression.js`
-    - CarpoolNotifier：`bash scripts/check.sh`
+    - AkastrCloud：`cd vps && npm run verify`
 - 结构一致性：
   - 新增/重构代码必须遵循 `docs/ARCHITECTURE.md` 的目录分层。
   - 不得继续在 `src/` 根目录堆叠新的业务模块文件。
@@ -81,7 +81,7 @@
 
 - `README.md`：项目介绍、安装、配置、回归总览。
 - `docs/SPEC.md`：接口与行为规格（判定语义、状态文件、错误语义）。
-- `docs/INTEGRATION.md`：与 CarpoolNotifier 的事件契约。
+- `docs/INTEGRATION.md`：与 AkastrCloud VPS Carpool 模块的事件契约。
 - `docs/RUNBOOK.md`：部署/更新/排障流程。
 - `docs/ARCHITECTURE.md`：`src/` 分层与职责地图。
 

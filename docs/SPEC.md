@@ -12,17 +12,17 @@
   - 监听 HTTP 端口（默认 `0.0.0.0:8787`）
   - 可选：提供 `/changeip` 触发换 IP + 可选重启（`REBOOT_DELAY_MINUTES=-1` 时不重启）
   - 可选：提供 `/ipquality` 触发本机 IPQuality 检测，并通过 `/ipquality/status` 暴露最近一次运行结果
-- 可选：公网 IPv4/IPv6 监测并上报到 CarpoolNotifier（仅在变化时上报）
+- 可选：公网 IPv4/IPv6 监测并上报到 AkastrCloud VPS（仅在变化时上报）
 
 破坏性更新说明：
 
 - 为解决“脚本换 IP 失败但公网 IPv4 未变化导致 bot 会话卡住”，本项目已升级为 **事件流** 上报（不做向下兼容）。
 - 唯一上报入口：`POST /internal/ip-events`。
-- 事件包含 `op_id` + `event`（started/succeeded/no_change/failed…），用于让 CarpoolNotifier 收敛频道消息与锁定期。
+- 事件包含 `op_id` + `event`（started/succeeded/no_change/failed…），用于让 AkastrCloud 收敛频道消息与锁定期。
 
 非目标：
 
-- 不负责 Telegram 交互（由 CarpoolNotifier 负责）
+- 不负责 Telegram 交互（由 AkastrCloud Carpool 模块负责）
 - 不负责数据库/持久业务逻辑（只维护自己极小的状态文件）
 - 不负责自动安装系统依赖
 
@@ -89,8 +89,8 @@ IPQuality（可选）：
 事件流上报（破坏性更新：唯一上报入口）：
 
 - `IP_EVENTS_ENABLED`：`1/0`
-- `IP_EVENTS_ENDPOINT`：例如 `https://<worker>/internal/ip-events`
-- `IP_EVENTS_TOKEN`：Bearer token（与 Worker secret `IP_EVENTS_TOKEN` 一致）
+- `IP_EVENTS_ENDPOINT`：例如 `https://<akastrcloud-domain>/internal/ip-events`
+- `IP_EVENTS_TOKEN`：Bearer token（与 AkastrCloud API 的 Git 外入站 secret 一致）
 - `CHANGE_MONITOR_START_DELAY_SECONDS`：触发 provider 后延迟多久开始监测（默认 `30`；若设置了重启延迟，则会在“预计重启时间”之后再加上该延迟）
 - `CHANGE_MONITOR_INTERVAL_SECONDS`：监测间隔（默认 `10`；仅在“换 IP 会话进行中”使用）
 - `CHANGE_MONITOR_TIMEOUT_SECONDS`：监测超时（默认 `1800` / 30 分钟）
@@ -429,4 +429,4 @@ JSON 对象：
 
 当前 `/ipquality` 明确只生成 IPv4 报告，并只暴露一个 `last_success.report_url`。
 
-后续若要支持 IPv6 质量报告，不要重新依赖“取最后一个 svg 链接”这类输出顺序。应先破坏性扩展 `/ipquality/status` 与状态文件，例如同时持久化 `ipv4_report_url` / `ipv6_report_url`，再同步扩展 CarpoolNotifier 的 D1 缓存、消息模板和每日缓存判定。
+后续若要支持 IPv6 质量报告，不要重新依赖“取最后一个 svg 链接”这类输出顺序。应先破坏性扩展 `/ipquality/status` 与状态文件，例如同时持久化 `ipv4_report_url` / `ipv6_report_url`，再同步扩展 AkastrCloud PostgreSQL 运行态、Carpool 消息模板和每日缓存判定。

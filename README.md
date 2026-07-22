@@ -4,14 +4,14 @@
 
 - （可选）通过 HTTP 触发 provider（脚本/命令/http_flow），并按配置可选自动重启，实现一键更换公网 IP
 - （可选）通过 HTTP 异步触发本机 IPQuality 检测，并保存最近一次成功/失败结果
-- 监测公网 **IPv4/IPv6** 是否发生变化，并上报到 CarpoolNotifier（Cloudflare Worker）
+- 监测公网 **IPv4/IPv6** 是否发生变化，并上报到 AkastrCloud VPS 的 Carpool 业务模块
 
 本项目只负责：
 
 - 在 VPS 上监听一个 HTTP 接口（默认 `0.0.0.0:8787`）。
 - （可选）接收到带密钥的请求后按 provider 执行换 IP 触发动作，并按 `REBOOT_DELAY_MINUTES` 可选安排重启（`-1` 表示不重启）。
 - （可选）接收到带密钥的请求后异步执行本机固定路径的 IPQuality 脚本，并保存最近一次运行状态。
-- 定期检测公网 IPv4/IPv6 变化并上报到 CarpoolNotifier。
+- 定期检测公网 IPv4/IPv6 变化并上报到 AkastrCloud。
 
 ---
 
@@ -19,7 +19,7 @@
 
 - `AGENTS.md`：项目约束/不变量（给 AI/协作者看的“快速上手”）
 - `docs/SPEC.md`：行为规格（接口、状态文件、监测/上报规则）
-- `docs/INTEGRATION.md`：与 CarpoolNotifier 的对接契约
+- `docs/INTEGRATION.md`：与 AkastrCloud VPS Carpool 模块的对接契约
 - `docs/RUNBOOK.md`：运维手册（部署/更新/排障）
 - `docs/ARCHITECTURE.md`：`src/` 模块分层与职责地图
 - `docs/BOIL_FLOW.md`：Boil 面板专用 flow 说明（变量映射、流程、兜底与排障）
@@ -305,7 +305,7 @@ MoonVM 这类“单 URL 触发”场景的最小配置通常如下：
 
 ### 3.2 IPv4/IPv6 监测与上报说明
 
-当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**；当 `IPV6_MONITOR_ENABLED=1` 时，会定期获取公网 **IPv6**。若与各自“上次已成功上报”的基线不同，则向 CarpoolNotifier 的内部接口上报一次（仅在变化时上报）。
+当 `IP_MONITOR_ENABLED=1` 时，服务会定期获取公网 **IPv4**；当 `IPV6_MONITOR_ENABLED=1` 时，会定期获取公网 **IPv6**。若与各自“上次已成功上报”的基线不同，则向 AkastrCloud 的内部接口上报一次（仅在变化时上报）。
 
 注意：
 
@@ -323,7 +323,7 @@ MoonVM 这类“单 URL 触发”场景的最小配置通常如下：
 - `IP_STATE_FILE`：状态文件路径（默认 `/var/lib/changeip-http/ip_state.json`）
 - `PENDING_CHANGE_FILE`：换 IP 会话状态文件路径（默认 `/var/lib/changeip-http/pending_change.json`）
 - `IP_EVENTS_ENABLED`：`1/0`，启用/关闭事件流上报（`POST /internal/ip-events`）
-- `IP_EVENTS_ENDPOINT`：CarpoolNotifier 上报地址（例如 `https://<worker>/internal/ip-events`）
+- `IP_EVENTS_ENDPOINT`：AkastrCloud 上报地址（例如 `https://<akastrcloud-domain>/internal/ip-events`）
 - `IP_EVENTS_TOKEN`：上报鉴权密钥（HTTP Header：`Authorization: Bearer <token>`）
 - `CHANGE_MONITOR_START_DELAY_SECONDS`：触发 provider 后延迟多久开始判定（默认 `30`；有重启时会叠加到预计重启后）
 - `CHANGE_MONITOR_INTERVAL_SECONDS`：换 IP 会话进行中的判定间隔（默认 `10`）
@@ -442,7 +442,7 @@ chmod +x install.sh uninstall.sh
       - 播报频道 `REPORT_CHANNEL`（例如 `@my_channel`，可留空=禁用频道播报；非空时必须是合法频道用户名或负数 chat_id）
    - 若未启用 `/changeip`：是否启用事件流上报（ip-events）
    - 若启用事件流上报：
-     - 上报地址 `IP_EVENTS_ENDPOINT`（CarpoolNotifier 内部接口：`/internal/ip-events`）
+     - 上报地址 `IP_EVENTS_ENDPOINT`（AkastrCloud 内部接口：`/internal/ip-events`）
      - 上报密钥 `IP_EVENTS_TOKEN`（留空则自动生成）
    - 是否启用 IPv4 变化监测（仅在变化时上报）
    - 若启用 IPv4 或 IPv6 变化监测：
@@ -542,9 +542,9 @@ rm -rf /root/ip-changer
 
 ---
 
-## 6. 与 Telegram 机器人（CarpoolNotifier）对接
+## 6. 与 AkastrCloud Carpool Bot 对接
 
-CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` 接口，整体流程如下：
+AkastrCloud VPS 内的 Carpool 业务模块在触发换 IP 时会调用本服务的 `/changeip` 接口，整体流程如下：
 
 1. 在 VPS 上按本 README 安装并启动本服务。
 2. 记住以下两项配置：
@@ -552,13 +552,22 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
    - `SERVER_LABEL`：本机标签（例如 `CMHK` / `HKT` / `HKBN`），用于在 bot 侧区分不同服务器。
    - `PORT`：HTTP 端口（默认 `8787`）。
    - `CHANGEIP_PROVIDER`：对应 provider（`script` / `exec` / `http_flow`）。
-3. 在 CarpoolNotifier（Cloudflare Worker）中为该 `SERVER_LABEL` 配置“地址 + token”映射：
-   - `CHANGEIP_ENDPOINTS_JSON`（vars）：`{"<SERVER_LABEL>":"http://<VPS_IP>:8787"}`
-     - 这里只填 ip-changer 服务器根地址；CarpoolNotifier 会自动推导 `/changeip` 与 `/info`
-   - `CHANGEIP_TOKENS_JSON`（secret）：`{"<SERVER_LABEL>":"<AUTH_TOKEN>"}`
-   - `CHANGEIP_SERVERS`（vars）：确保包含该服务器；bot 侧可调用的 ip-changer 统一标记为 `script`（例如 `CMHK:script`）
-     - `CHANGEIP_PROVIDER=exec/http_flow` 只属于本机 ip-changer 内部触发方式，不能原样写到 CarpoolNotifier 的 `CHANGEIP_SERVERS`
-4. 重新部署 / 启动 CarpoolNotifier，使其读取新的配置。
+3. 在 AkastrCloud PostgreSQL 的 `service_servers` 中确认该节点已有稳定 UUID，并在 Git 外 `IPCHANGER_CONFIG_FILE` 中登记：
+
+   ```json
+   {
+     "servers": [
+       {
+         "server_id": "<service_servers UUID>",
+         "base_url": "http://<VPS_IP>:8787",
+         "token_file": "/run/secrets/ipchanger/<server>.txt"
+       }
+     ]
+   }
+   ```
+
+   `token_file` 指向的 root-only 文件保存与本机 `AUTH_TOKEN` 相同的值。配置、token 和真实节点地址不得进入 Git、数据库或日志。
+4. 按 AkastrCloud 的 immutable release 流程重建并原子激活 worker；不要在运行中的容器里手改配置。
 5. 用管理员账号向 Telegram 机器人发送 `/changeip`：
    - 机器人会校验你是否管理员。
    - 按 `SERVER_LABEL` 找到对应的 ip-changer 服务器并触发换 IP。
@@ -569,23 +578,23 @@ CarpoolNotifier 机器人在触发换 IP 时会调用本服务的 `/changeip` �
 
 > 安全建议：
 > - 尽量只在内网或受控网络中开放该端口（如通过防火墙限制来源 IP）。
-> - `AUTH_TOKEN` 要足够随机且保密，只在 CarpoolNotifier 环境变量和安装日志（你自己留存）中使用。
+> - `AUTH_TOKEN` 要足够随机且保密，只保存在 ip-changer 本机配置和 AkastrCloud Git 外 token file 中。
 
 ### 6.1 IP 事件流对接（IPv4 播报 + IPv6 管理员通知）
 
-`ip-changer` 会向 CarpoolNotifier 的内部接口上报事件流（自然变化 + 换 IP 状态），因此你需要在 Cloudflare Worker 中配置密钥：
+`ip-changer` 会向 AkastrCloud 的内部接口上报事件流（自然变化 + 换 IP 状态），因此需要在 AkastrCloud API 的 Git 外 secret 中配置同一把入站密钥：
 
-- `IP_EVENTS_TOKEN`（secret）：与 VPS 上 `IP_EVENTS_TOKEN` 完全一致
+- `IP_EVENTS_TOKEN`：与节点上的 `IP_EVENTS_TOKEN` 完全一致
 
-并确保 Worker 中已实现内部路由：
+AkastrCloud API 固定提供内部路由：
 
 - `POST /internal/ip-events`（鉴权：`Authorization: Bearer <IP_EVENTS_TOKEN>`）
   - 事件体会自动携带 `contract_version`（当前 `2026-04-03.v1`）
 
 随后：
 
-- 当 VPS 公网 IPv4 发生变化时，CarpoolNotifier 会按既有逻辑播报/通知。
-- 当 VPS 公网 IPv6 发生变化时，CarpoolNotifier 会写入 `iplog` 事件日志并通知管理员（不向频道播报）。
+- 当 VPS 公网 IPv4 发生变化时，AkastrCloud Carpool 模块会按既有逻辑播报/通知。
+- 当 VPS 公网 IPv6 发生变化时，AkastrCloud 会写入 `iplog` 事件日志并通知管理员（不向频道播报）。
 
 ---
 
@@ -636,7 +645,7 @@ systemctl restart changeip-http
 systemctl restart changeip-http
 ```
 
-如果你修改了 `AUTH_TOKEN`，记得同步更新 CarpoolNotifier 中该 `SERVER_LABEL` 对应的 `CHANGEIP_TOKENS_JSON` 条目。
+如果你修改了 `AUTH_TOKEN`，必须同步原子替换 AkastrCloud `IPCHANGER_CONFIG_FILE` 所引用的对应 token file，再按正式发布流程重建 worker；不要把 token 写进 JSON、命令行或 Git。
 
 ### 7.3 本地回归脚本（开发/改动后建议执行）
 
@@ -706,5 +715,5 @@ node scripts/changeip_regression.js
   ```
   即可启动服务，但不具备开机自启与守护功能。
 
-- **Q: CarpoolNotifier 必须部署在 VPS 上吗？**  
-  A: 不需要。CarpoolNotifier 可以继续部署在 Cloudflare Worker 上，只要它能访问你的 VPS HTTP 端口即可（你需要在防火墙或安全组中允许来自相应 IP 的访问）。
+- **Q: Carpool Bot 现在运行在哪里？**
+  A: 当前生产 Bot 是 AkastrCloud VPS 模块，和 API/worker 共用 PostgreSQL 基础设施，但仍保持独立 Token、webhook、模板和任务类型。旧 Cloudflare Worker/D1 仓库只用于冻结行为参考，不能重新接回生产。
