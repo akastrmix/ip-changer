@@ -1,5 +1,7 @@
 # ip-changer — Agent Notes (for AI / contributors)
 
+> 本仓库已经归档。除修正归档元数据外不得继续开发、发布或部署；当前实现只作为历史证据，所有节点操作由 Akastr Agent 与 AkastrCloud 负责。
+
 本文件是新对话的“硬约束索引页”。  
 目标：让协作者在不依赖聊天上下文的情况下，快速按统一规则改动本项目。
 

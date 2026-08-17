@@ -1,4 +1,8 @@
-# ip-changer — HTTP Trigger + IPv4/IPv6 变化监测
+# ip-changer（已归档）
+
+> 本项目已于 2026-08-17 退役，由 [Akastr Agent](https://github.com/akastrmix/akastr-agent) 取代。AkastrCloud 已删除旧 HTTP provider、事件入口和生产凭据；本仓库只保留历史源码，不再支持安装、更新、部署或恢复。下方内容仅用于历史取证，请勿照此操作。
+
+## 历史说明：HTTP Trigger + IPv4/IPv6 变化监测
 
 一个极简的常驻服务，用于在 Debian VPS 上：
 
